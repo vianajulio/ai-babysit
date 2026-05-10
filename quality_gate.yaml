@@ -1,0 +1,36 @@
+quality_gate:
+  provider: azure_devops
+  ratchet: true
+  workspace:
+    temp_dir: /tmp/babysit
+    cleanup_after_run: true
+    timeout_seconds: 300
+
+  checks:
+    file_size:
+      enabled: true
+      max_lines_per_file: 400
+      max_lines_per_function: 80
+
+    complexity:
+      enabled: true
+      tool: lizard
+      max_cyclomatic_complexity: 10
+      cannot_increase_average: true
+
+    duplication:
+      enabled: true
+      tool: jscpd
+      max_percent: 5
+      cannot_increase: true
+      fail_only_on_changed_files: true
+
+    secrets:
+      enabled: true
+      tool: gitleaks
+      block_on_detection: true
+
+    ai_review:
+      enabled: true
+      mode: suggest_only
+      comment_on_pr: true

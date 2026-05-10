@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+httpx
+python-dotenv
+pydantic-settings
+pyyaml
+sqlalchemy
+alembic
+pytest
+lizard
+mcp>=1.0.0
