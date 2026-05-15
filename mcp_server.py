@@ -5,6 +5,8 @@ from typing import Annotated
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from app.gates.mcp_table import build_quality_gate_table
+
 BABYSIT_URL = os.getenv("BABYSIT_URL", "http://localhost:8000")
 TIMEOUT = 300.0
 
@@ -46,6 +48,25 @@ async def _post(path: str, payload: dict) -> str:
         return _err("Timeout ao chamar o servidor babysit.")
 
 
+async def _load_baseline(repository: str, branch: str) -> dict | None:
+    response = await _get(f"/baselines/{repository}?branch={branch}")
+    try:
+        data = json.loads(response)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or "detail" in data or "error" in data:
+        return None
+    return data
+
+
+def _table_from_response(response: str, before_metrics: dict | None = None) -> str:
+    try:
+        data = json.loads(response)
+    except json.JSONDecodeError:
+        data = {"error": response}
+    return build_quality_gate_table(data, before_metrics)
+
+
 @mcp.tool()
 async def run_local_gate(
     workspace: Annotated[str, "Caminho absoluto do diretório raiz do projeto"],
@@ -56,7 +77,8 @@ async def run_local_gate(
 ) -> str:
     """Executa o quality gate em arquivos locais: verifica tamanho, complexidade ciclomática,
     duplicação de código e secrets expostos. Use sempre que gerar ou modificar arquivos de código."""
-    return await _post(
+    before_metrics = await _load_baseline(repository, branch) if use_ratchet else None
+    response = await _post(
         "/local/gate",
         {
             "workspace": workspace,
@@ -66,6 +88,7 @@ async def run_local_gate(
             "use_ratchet": use_ratchet,
         },
     )
+    return _table_from_response(response, before_metrics)
 
 
 @mcp.tool()
@@ -118,7 +141,8 @@ async def run_azure_pr_gate(
 ) -> str:
     """Executa o quality gate completo em um PR do Azure DevOps: clona o repositório, roda todos
     os checks, aplica ratchet e posta o resultado como comentário no PR."""
-    return await _post(f"/providers/azure/prs/{pr_id}/gate", {})
+    response = await _post(f"/providers/azure/prs/{pr_id}/gate", {})
+    return _table_from_response(response)
 
 
 if __name__ == "__main__":

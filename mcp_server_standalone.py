@@ -18,9 +18,11 @@ from mcp.server.fastmcp import FastMCP
 
 from app.ai import ollama
 from app.ai.prompts import build_review_prompt, load_standards
+from app.gates.mcp_table import build_quality_gate_table
 from app.gates.orchestrator import run_local_quality_gate, run_quality_gate
 from app.providers import azure_devops
 from app.storage import database, repositories
+from settings import settings
 
 
 @asynccontextmanager
@@ -51,6 +53,7 @@ async def run_local_gate(
     """Executa o quality gate em arquivos locais: verifica tamanho, complexidade ciclomática,
     duplicação de código e secrets expostos. Use sempre que gerar ou modificar arquivos de código."""
     try:
+        before_metrics = repositories.load_baseline(repository, branch) if use_ratchet else None
         result = await run_local_quality_gate(
             workspace=Path(workspace),
             changed_files=files,
@@ -58,7 +61,7 @@ async def run_local_gate(
             branch=branch,
             use_ratchet=use_ratchet,
         )
-        return json.dumps(result)
+        return build_quality_gate_table(result, before_metrics)
     except HTTPException as exc:
         return _http_err(exc)
     except Exception as exc:
@@ -148,8 +151,11 @@ async def run_azure_pr_gate(
     """Executa o quality gate completo em um PR do Azure DevOps: clona o repositório, roda todos
     os checks, aplica ratchet e posta o resultado como comentário no PR."""
     try:
+        pr = await azure_devops.get_pull_request(pr_id)
+        target_branch = pr["targetRefName"].replace("refs/heads/", "")
+        before_metrics = repositories.load_baseline(settings.azure_repo, target_branch)
         result = await run_quality_gate(pr_id)
-        return json.dumps(result)
+        return build_quality_gate_table(result, before_metrics)
     except HTTPException as exc:
         return _http_err(exc)
     except Exception as exc:
