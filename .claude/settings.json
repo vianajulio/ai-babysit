@@ -2,10 +2,7 @@
   "mcpServers": {
     "babysit": {
       "command": "/mnt/jogos/Projetos/babysit/.venv/bin/python",
-      "args": ["/mnt/jogos/Projetos/babysit/mcp_server.py"],
-      "env": {
-        "BABYSIT_URL": "http://localhost:8000"
-      }
+      "args": ["/mnt/jogos/Projetos/babysit/mcp_server_standalone.py"]
     }
   }
 }
