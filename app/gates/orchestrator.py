@@ -5,6 +5,7 @@ from app.gates import ratchet, result
 from app.gates.models import CheckResult, GateRun, GateStatus
 from app.providers import azure_devops
 from app.runners.ai_review import AIReviewRunner
+from app.runners.big_o import BigORunner
 from app.runners.complexity import ComplexityRunner
 from app.runners.duplication import DuplicationRunner
 from app.runners.file_size import FileSizeRunner
@@ -41,6 +42,16 @@ def _build_runners(config: dict) -> list:
 
     if checks.get("secrets", {}).get("enabled", True):
         runners.append(SecretsRunner())
+
+    if checks.get("big_o", {}).get("enabled", False):
+        cfg = checks.get("big_o", {})
+        runners.append(BigORunner(
+            languages=cfg.get("languages", ["csharp"]),
+            fail_on_high=cfg.get("fail_on_high", True),
+            warn_on_medium=cfg.get("warn_on_medium", True),
+            max_files_per_run=cfg.get("max_files_per_run", 20),
+            max_code_chars=cfg.get("max_code_chars", 1000),
+        ))
 
     return runners
 

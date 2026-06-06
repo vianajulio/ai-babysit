@@ -12,7 +12,10 @@ _FUNC_PATTERNS = [
     re.compile(r"^\s*(function |const \w+ ?= ?(\(|async))"),
 ]
 
-_IGNORED_EXTENSIONS = {".md", ".txt", ".json", ".yaml", ".yml", ".lock", ".sum", ".xml", ".csproj", ".sln"}
+_IGNORED_EXTENSIONS = {
+    ".html", ".md", ".txt", ".json", ".yaml", ".yml", ".lock", ".sum", ".xml", ".csproj", ".sln"
+}
+_IGNORED_SUFFIXES = (".designer.cs", ".generated.cs", ".g.cs")
 _CS_TYPE_DECLARATIONS = re.compile(r"\b(class|record|struct|interface|enum)\b")
 
 
@@ -20,6 +23,11 @@ def _is_function_start(line: str) -> bool:
     if not any(p.match(line) for p in _FUNC_PATTERNS):
         return False
     return not _CS_TYPE_DECLARATIONS.search(line)
+
+
+def _is_ignored_file(path: str) -> bool:
+    lower_path = path.lower()
+    return Path(path).suffix.lower() in _IGNORED_EXTENSIONS or lower_path.endswith(_IGNORED_SUFFIXES)
 
 
 def _count_function_lines(lines: list[str], max_lines: int) -> list[tuple[int, int]]:
@@ -61,7 +69,7 @@ class FileSizeRunner:
         max_function_lines = 0
 
         for rel_path in changed_files:
-            if Path(rel_path).suffix.lower() in _IGNORED_EXTENSIONS:
+            if _is_ignored_file(rel_path):
                 continue
 
             full_path = workspace / rel_path.lstrip("/")

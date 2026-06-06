@@ -30,6 +30,15 @@ quality_gate:
       tool: gitleaks
       block_on_detection: true
 
+    big_o:
+      enabled: true
+      languages: ["csharp"]
+      mode: hybrid
+      fail_on_high: true
+      warn_on_medium: true
+      max_files_per_run: 20
+      max_code_chars: 1000
+
     ai_review:
       enabled: true
       mode: suggest_only
