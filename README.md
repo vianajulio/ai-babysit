@@ -18,7 +18,8 @@ POST /providers/azure/prs/{pr_id}/gate
         │     ├─ file_size    — linhas por arquivo e por função
         │     ├─ complexity   — complexidade ciclomática (lizard)
         │     ├─ duplication  — duplicação de código (jscpd)
-        │     └─ secrets      — credenciais expostas (gitleaks)
+        │     ├─ secrets      — credenciais expostas (gitleaks)
+        │     └─ big_o        — riscos de complexidade algorítmica em C# (Ollama)
         ├─ Compara métricas com baseline da target branch (ratchet)
         ├─ Chama Ollama para sugestões nos checks com falha
         ├─ Publica comentário markdown no PR
@@ -137,6 +138,15 @@ quality_gate:
     secrets:
       enabled: true
       block_on_detection: true
+
+    big_o:
+      enabled: true
+      languages: ["csharp"]
+      mode: hybrid
+      fail_on_high: true
+      warn_on_medium: true
+      max_files_per_run: 20
+      max_code_chars: 1000
 
     ai_review:
       enabled: true

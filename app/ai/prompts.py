@@ -52,6 +52,39 @@ Responda APENAS com o seguinte JSON válido:
 }}"""
 
 
+def build_big_o_prompt(language: str, file_path: str, code: str) -> str:
+    return f"""Voce e um revisor especializado em complexidade algoritmica e Big O.
+
+Analise somente riscos de complexidade algoritmica. Ignore estilo, arquitetura, nomenclatura, logs e validacoes, a menos que afetem diretamente Big O.
+
+Classificacao:
+- high: risco claro de escalabilidade, como consulta a banco dentro de loop, varredura quadratica evitavel em colecoes grandes, ordenacao/materializacao repetida dentro de loop.
+- medium: ineficiencia provavel, mas dependente de contexto ou tamanho dos dados.
+- low: oportunidade menor que nao deve afetar o quality gate.
+
+Contexto:
+- language: {language}
+- filePath: {file_path}
+
+[CODIGO]
+{code}
+
+Responda APENAS com JSON valido, sem texto adicional fora do JSON:
+{{
+  "summary": "resumo curto",
+  "issues": [
+    {{
+      "severity": "low|medium|high",
+      "line": 0,
+      "current_complexity": "O(n^2)",
+      "suggested_complexity": "O(n)",
+      "problem": "descricao do problema",
+      "suggestion": "correcao pratica"
+    }}
+  ]
+}}"""
+
+
 def build_suggestion_prompt(check_name: str, violations: list[dict]) -> str:
     violations_text = "\n".join(
         f"- {v.get('file', '')}:{v.get('line', '')} — {v.get('message', '')}"

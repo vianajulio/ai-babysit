@@ -8,6 +8,8 @@ _RATCHET_METRICS = {
     "max_function_lines": "higher_is_worse",
     "violations_count": "higher_is_worse",
     "secrets_found": "higher_is_worse",
+    "high_issues": "higher_is_worse",
+    "medium_issues": "higher_is_worse",
 }
 
 
@@ -24,7 +26,7 @@ def compare(current: dict, baseline: dict) -> dict[str, bool]:
     """Returns {metric: True if worsened} for ratcheted metrics."""
     regressions = {}
     for key, direction in _RATCHET_METRICS.items():
-        for prefix in ("", *[f"{c}." for c in ("file_size", "complexity", "duplication", "secrets")]):
+        for prefix in ("", *[f"{c}." for c in ("file_size", "complexity", "duplication", "secrets", "big_o")]):
             fqk = f"{prefix}{key}" if prefix else key
             if fqk in current and fqk in baseline:
                 cur = current[fqk]
