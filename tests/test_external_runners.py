@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 
 import httpx
 
@@ -40,8 +41,9 @@ def test_duplication_runner_passes_global_duplication_when_no_changed_file_viola
     unchanged = tmp_path / "Unchanged.cs"
     changed.write_text("public class Changed {}", encoding="utf-8")
     unchanged.write_text("public class Unchanged {}", encoding="utf-8")
+    report_dir = tmp_path.parent / "reports-a"
     _write_jscpd_report(
-        tmp_path.parent,
+        report_dir,
         percentage=27.5,
         duplicates=[_clone(str(unchanged), str(unchanged))],
     )
@@ -49,7 +51,8 @@ def test_duplication_runner_passes_global_duplication_when_no_changed_file_viola
     monkeypatch.setattr("app.runners.duplication.asyncio.create_subprocess_exec", _successful_process)
 
     result = asyncio.run(
-        DuplicationRunner(max_percent=5, fail_only_on_changed_files=True).run(tmp_path, ["Changed.cs"])
+        DuplicationRunner(max_percent=5, fail_only_on_changed_files=True, report_dir=report_dir)
+        .run(tmp_path, ["Changed.cs"])
     )
 
     assert result.status == GateStatus.passed
@@ -62,8 +65,9 @@ def test_duplication_runner_fails_when_changed_file_has_duplication(tmp_path, mo
     other = tmp_path / "Other.cs"
     changed.write_text("public class Changed {}", encoding="utf-8")
     other.write_text("public class Other {}", encoding="utf-8")
+    report_dir = tmp_path.parent / "reports-b"
     _write_jscpd_report(
-        tmp_path.parent,
+        report_dir,
         percentage=27.5,
         duplicates=[_clone(str(changed), str(other))],
     )
@@ -71,11 +75,49 @@ def test_duplication_runner_fails_when_changed_file_has_duplication(tmp_path, mo
     monkeypatch.setattr("app.runners.duplication.asyncio.create_subprocess_exec", _successful_process)
 
     result = asyncio.run(
-        DuplicationRunner(max_percent=5, fail_only_on_changed_files=True).run(tmp_path, ["Changed.cs"])
+        DuplicationRunner(max_percent=5, fail_only_on_changed_files=True, report_dir=report_dir)
+        .run(tmp_path, ["Changed.cs"])
     )
 
     assert result.status == GateStatus.failed
     assert result.violations[0].file == "Changed.cs"
+
+
+def test_duplication_runner_isolates_report_dir_when_run_concurrently(tmp_path, monkeypatch):
+    changed = tmp_path / "Changed.cs"
+    changed.write_text("public class Changed {}", encoding="utf-8")
+
+    call_log: list[Path] = []
+
+    async def fake_exec(*cmd, **kwargs):
+        idx = cmd.index("--output")
+        output_dir = Path(cmd[idx + 1])
+        call_index = len(call_log)
+        call_log.append(output_dir)
+        percentage = 10.0 if call_index == 0 else 20.0
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "jscpd-report.json").write_text(
+            json.dumps({"statistics": {"total": {"percentage": percentage}}, "duplicates": []}),
+            encoding="utf-8",
+        )
+        await asyncio.sleep(0.05 if call_index == 0 else 0.01)
+        return _Process()
+
+    monkeypatch.setattr("app.runners.duplication.asyncio.create_subprocess_exec", fake_exec)
+
+    async def run_both():
+        runner_a = DuplicationRunner()
+        runner_b = DuplicationRunner()
+        task_a = asyncio.create_task(runner_a.run(tmp_path, ["Changed.cs"]))
+        task_b = asyncio.create_task(runner_b.run(tmp_path, ["Changed.cs"]))
+        return await asyncio.gather(task_a, task_b)
+
+    result_a, result_b = asyncio.run(run_both())
+
+    assert len(call_log) == 2
+    assert call_log[0] != call_log[1]
+    assert result_a.metrics["duplication_percent"] == 10.0
+    assert result_b.metrics["duplication_percent"] == 20.0
 
 
 def test_secrets_runner_skips_when_gitleaks_is_missing(tmp_path, monkeypatch):
@@ -90,6 +132,42 @@ def test_secrets_runner_skips_when_gitleaks_is_missing(tmp_path, monkeypatch):
     assert result.metrics == {"error": "gitleaks não instalado"}
 
 
+def test_secrets_runner_isolates_report_dir_when_run_concurrently(tmp_path, monkeypatch):
+    changed = tmp_path / "Changed.cs"
+    changed.write_text("public class Changed {}", encoding="utf-8")
+
+    call_log: list[Path] = []
+
+    async def fake_exec(*cmd, **kwargs):
+        idx = cmd.index("--report-path")
+        report_path = Path(cmd[idx + 1])
+        call_index = len(call_log)
+        call_log.append(report_path)
+        findings = [] if call_index == 0 else [
+            {"File": str(changed), "StartLine": 1, "RuleID": "aws-key"}
+        ]
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(findings), encoding="utf-8")
+        await asyncio.sleep(0.05 if call_index == 0 else 0.01)
+        return _Process()
+
+    monkeypatch.setattr("app.runners.secrets.asyncio.create_subprocess_exec", fake_exec)
+
+    async def run_both():
+        runner_a = SecretsRunner()
+        runner_b = SecretsRunner()
+        task_a = asyncio.create_task(runner_a.run(tmp_path, ["Changed.cs"]))
+        task_b = asyncio.create_task(runner_b.run(tmp_path, ["Changed.cs"]))
+        return await asyncio.gather(task_a, task_b)
+
+    result_a, result_b = asyncio.run(run_both())
+
+    assert len(call_log) == 2
+    assert call_log[0] != call_log[1]
+    assert result_a.metrics["secrets_found"] == 0
+    assert result_b.metrics["secrets_found"] == 1
+
+
 def test_file_size_runner_ignores_generated_designer_and_html_templates(tmp_path):
     generated = tmp_path / "Migration.Designer.cs"
     template = tmp_path / "template.html"
@@ -97,6 +175,24 @@ def test_file_size_runner_ignores_generated_designer_and_html_templates(tmp_path
     template.write_text("<div></div>\n" * 500, encoding="utf-8")
 
     result = asyncio.run(FileSizeRunner().run(tmp_path, [generated.name, template.name]))
+
+    assert result.status == GateStatus.passed
+    assert result.metrics["violations_count"] == 0
+    assert result.metrics["max_file_lines"] == 0
+    assert result.metrics["max_function_lines"] == 0
+
+
+def test_file_size_runner_ignores_configured_migrations_directory(tmp_path):
+    migration = tmp_path / "src" / "Persistence" / "Migrations" / "v082.cs"
+    migration.parent.mkdir(parents=True)
+    migration.write_text("public void Build() {\n" + "x();\n" * 500 + "}\n", encoding="utf-8")
+
+    result = asyncio.run(
+        FileSizeRunner(exclude=["*Migrations*"]).run(
+            tmp_path,
+            ["src/Persistence/Migrations/v082.cs"],
+        )
+    )
 
     assert result.status == GateStatus.passed
     assert result.metrics["violations_count"] == 0
@@ -299,6 +395,7 @@ async def _successful_process(*args, **kwargs):
 
 
 def _write_jscpd_report(report_dir, percentage: float, duplicates: list[dict]):
+    report_dir.mkdir(parents=True, exist_ok=True)
     (report_dir / "jscpd-report.json").write_text(
         json.dumps({"statistics": {"total": {"percentage": percentage}}, "duplicates": duplicates}),
         encoding="utf-8",

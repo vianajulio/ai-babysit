@@ -1,5 +1,9 @@
 import asyncio
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import mcp_server_standalone as server
 
@@ -66,3 +70,86 @@ def test_run_local_gate_passes_validation_when_files_exist(tmp_path, monkeypatch
 
     assert out == "OK"
     assert captured["changed_files"] == ["Foo.py"]
+
+
+def test_standalone_import_does_not_load_remote_or_http_runtime():
+    code = """
+import sys
+import mcp_server_standalone
+assert 'app.providers.azure_devops' not in sys.modules
+assert 'app.ai.ollama' not in sys.modules
+assert 'uvicorn' not in sys.modules
+assert not hasattr(mcp_server_standalone, 'run_azure_pr_gate')
+assert not hasattr(mcp_server_standalone, 'list_azure_prs')
+"""
+    env = os.environ.copy()
+    for key in list(env):
+        if key.startswith("AZURE_"):
+            env.pop(key)
+    subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        env=env,
+        cwd=Path(__file__).parents[1],
+        stdin=subprocess.DEVNULL,
+    )
+
+
+def test_run_local_gate_rejects_existing_file_outside_workspace(tmp_path, monkeypatch):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr(server, "_ensure_db", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
+
+    result = _call(workspace, [str(outside)])
+
+    assert "error" in result
+    assert "fora do workspace" in result["error"]
+
+
+def test_run_commit_gate_uses_detached_worktree_and_cleans_it(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=repo, check=True, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        ).stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    (repo / "changed.py").write_text("value = 1\n", encoding="utf-8")
+    (repo / "deleted.py").write_text("gone\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    (repo / "changed.py").write_text("value = 2\n", encoding="utf-8")
+    (repo / "deleted.py").unlink()
+    (repo / "added.py").write_text("new = True\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "change")
+    sha = git("rev-parse", "HEAD")
+
+    captured = {}
+
+    async def fake_gate(**kwargs):
+        captured.update(kwargs)
+        assert kwargs["workspace"].is_dir()
+        assert set(kwargs["changed_files"]) == {"changed.py", "added.py"}
+        assert not (kwargs["workspace"] / "deleted.py").exists()
+        return {"status": "passed", "checks": []}
+
+    monkeypatch.setattr(server, "_ensure_db", lambda: None)
+    monkeypatch.setattr(server, "run_local_quality_gate", fake_gate)
+    monkeypatch.setattr(server, "build_quality_gate_table", lambda result, before: "OK")
+
+    original_head = git("rev-parse", "HEAD")
+    output = asyncio.run(server.run_commit_gate(str(repo), sha))
+
+    assert output == "OK"
+    assert captured["use_ratchet"] is False
+    assert captured["workspace"] != repo.resolve()
+    assert not captured["workspace"].exists()
+    assert git("rev-parse", "HEAD") == original_head
+    assert len(git("worktree", "list").splitlines()) == 1

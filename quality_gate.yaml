@@ -1,8 +1,8 @@
 quality_gate:
-  provider: azure_devops
-  ratchet: true
+  provider: local
+  ratchet: false
   workspace:
-    temp_dir: /tmp/babysit
+    temp_dir: .babysit/workspaces
     cleanup_after_run: true
     timeout_seconds: 300
 
@@ -31,7 +31,7 @@ quality_gate:
       block_on_detection: true
 
     big_o:
-      enabled: true
+      enabled: false
       languages: ["csharp"]
       mode: hybrid
       fail_on_high: true
@@ -40,6 +40,14 @@ quality_gate:
       max_code_chars: 1000
 
     ai_review:
-      enabled: true
+      enabled: false
       mode: suggest_only
       comment_on_pr: true
+
+  pr_review:
+    one_shot_max_files: 10
+    one_shot_max_diff_lines: 800
+    max_files_per_shard: 15
+    max_diff_lines_per_shard: 1200
+    parallel_hint: 4
+    plan_ttl_minutes: 60
