@@ -121,7 +121,7 @@ quality_gate:
   checks:
     file_size:
       enabled: true
-      max_lines_per_file: 400
+      max_lines_per_file: 300
       max_lines_per_function: 80
 
     complexity:
@@ -362,7 +362,11 @@ Formato de um finding:
 ```
 
 `high` reprova o gate quando `block_on: high`; `medium` vira `warning`; `low` é
-informativo. **Nada vindo de `agent_review` entra no baseline do ratchet**:
+informativo. `block_on` aceita apenas `high` ou `none` (a comparação é
+normalizada): um valor inventado é recusado em vez de desligar o bloqueio em
+silêncio. Um finding cujo `file` não pertence à fatia da task é rejeitado, e um
+`submit` em plano já consolidado também — nos dois casos o finding não chegaria
+ao veredito. **Nada vindo de `agent_review` entra no baseline do ratchet**:
 findings não são reprodutíveis entre execuções, e promovê-los a referência faria
 o ratchet oscilar. Eles continuam no `GateRun` — o que muda é só o que vira
 baseline.
@@ -371,9 +375,17 @@ baseline.
 
 Se um subagente morrer ou o cliente desistir da revisão semântica, o plano ficaria
 travado esperando. `get_review_plan(plan_id, force=true)` consolida com o que
-existe, registra `agent_review: skipped` com a contagem de tasks sem retorno e
-**nunca** devolve `passed` limpo — um PR sem a review que foi pedida não pode
-parecer aprovado.
+existe, registra `skipped` com a contagem de tasks sem retorno e **nunca**
+devolve `passed` limpo — um PR sem a review que foi pedida não pode parecer
+aprovado. Task de agente faltando vira `agent_review: skipped`; task
+determinística faltando vira `skipped` no próprio check (`duplication`,
+`secrets`…), para nenhuma medição sumir da tabela sem aviso.
+
+Consolidação forçada **não** encerra o plano: se uma task atrasada chegar
+depois, ela ainda entra no veredito da próxima chamada. Planos inativos há mais
+de `plan_ttl_minutes` — contados pela última atividade das tasks, não pela
+criação — são expirados na próxima chamada a `plan_pr_review`, inclusive os já
+consolidados que ninguém fechou.
 
 ### `mode`: forçar inline ou fan-out
 

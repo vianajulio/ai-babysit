@@ -40,6 +40,9 @@ class DuplicationRunner:
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
+                    # Sob o servidor MCP o stdin do processo é o pipe do
+                    # cliente stdio; herdá-lo trava a ferramenta até o timeout.
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )

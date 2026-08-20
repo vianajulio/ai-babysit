@@ -32,7 +32,31 @@ def load_standards(workspace: Path | None = None) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-def build_review_prompt(standards: str, language: str, file_path: str, code: str, diff: str | None) -> str:
+# Como o modo chega da config/tool, o vocabulário é fechado: um valor inventado
+# escolheria silenciosamente o rigor errado.
+REVIEW_MODES: dict[str, str] = {
+    "strict": "aponte todo problema real, inclusive os de média gravidade",
+    "suggest_only": (
+        "não reprove o código; trate cada apontamento como sugestão de melhoria"
+    ),
+    "lenient": "aponte apenas problemas graves; ignore estilo e detalhe menor",
+}
+
+
+def build_review_prompt(
+    standards: str,
+    language: str,
+    file_path: str,
+    code: str,
+    diff: str | None,
+    review_mode: str = "strict",
+) -> str:
+    mode = str(review_mode or "strict").strip().lower()
+    if mode not in REVIEW_MODES:
+        raise ValueError(
+            f"review_mode inválido: {review_mode!r}; use um de {', '.join(REVIEW_MODES)}"
+        )
+
     diff_section = f"\n[DIFF]\n{diff}" if diff else ""
     return f"""Você é um revisor de código especializado em C#, .NET, Clean Architecture, SOLID, EF Core e APIs REST.
 
@@ -44,6 +68,7 @@ Use obrigatoriamente o padrão de código abaixo:
 Analise o código abaixo.
 
 Regras:
+- Modo de revisão ({mode}): {REVIEW_MODES[mode]}
 - Não reescreva o arquivo inteiro.
 - Aponte apenas problemas reais.
 - Classifique cada problema como low, medium ou high.

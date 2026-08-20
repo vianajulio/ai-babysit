@@ -187,3 +187,64 @@ def test_deterministic_checks_are_aggregated_not_repeated_per_shard(tmp_path, db
     names = [check["check"] for check in ctx["deterministic_checks"]]
 
     assert len(names) == len(set(names))
+
+
+def test_expiry_frees_a_consolidated_plan_that_was_never_closed(tmp_path, db):
+    from datetime import datetime, timedelta
+
+    from app.mcp import plan_state
+    from app.storage.database import ReviewPlanRecord
+
+    plan = _plan(_repo_with_agent_plan(tmp_path))
+    for task in plan["tasks"]:
+        if task.get("kind", "deterministic") == "deterministic":
+            asyncio.run(server.run_review_task(plan["plan_id"], task["task_id"]))
+    asyncio.run(server.get_review_plan(plan["plan_id"], force=True))
+
+    with database.get_session() as session:
+        record = session.query(ReviewPlanRecord).filter_by(plan_id=plan["plan_id"]).one()
+        record.status = "complete"
+        record.created_at = datetime.utcnow() - timedelta(hours=5)
+        session.commit()
+    with database.get_session() as session:
+        for task_record in session.query(database.ReviewTaskRecord).filter_by(plan_id=plan["plan_id"]):
+            task_record.updated_at = datetime.utcnow() - timedelta(hours=5)
+        session.commit()
+
+    plan_state.expire_stale_plans(60)
+
+    assert repositories.load_review_plan(plan["plan_id"]) is None
+
+
+def test_expiry_spares_a_plan_with_recent_task_activity(tmp_path, db):
+    from datetime import datetime, timedelta
+
+    from app.mcp import plan_state
+    from app.storage.database import ReviewPlanRecord
+
+    plan = _plan(_repo_with_agent_plan(tmp_path))
+    deterministic = next(
+        task["task_id"] for task in plan["tasks"] if task.get("kind") == "deterministic"
+    )
+    asyncio.run(server.run_review_task(plan["plan_id"], deterministic))
+
+    with database.get_session() as session:
+        record = session.query(ReviewPlanRecord).filter_by(plan_id=plan["plan_id"]).one()
+        record.created_at = datetime.utcnow() - timedelta(hours=5)
+        session.commit()
+
+    plan_state.expire_stale_plans(60)
+
+    assert repositories.load_review_plan(plan["plan_id"]) is not None
+
+
+def test_truncation_cuts_on_a_line_boundary_and_marks_the_cut(tmp_path, db):
+    plan = _plan(_repo_with_agent_plan(tmp_path, big=True, max_context_chars=500))
+    ctx = _context(plan["plan_id"], _agent_task_id(plan))
+
+    for entry in ctx["files"]:
+        if entry["path"] not in ctx["truncated"]:
+            continue
+        assert entry["diff"].endswith("\n[diff truncado por max_context_chars]\n")
+        body = entry["diff"].removesuffix("\n[diff truncado por max_context_chars]\n")
+        assert body == "" or not body.endswith("\r")

@@ -24,5 +24,6 @@ async def review_file(req: ReviewRequest):
         file_path=req.filePath,
         code=req.code,
         diff=req.diff,
+        review_mode=req.reviewMode,
     )
     return await ollama.generate_json(prompt)

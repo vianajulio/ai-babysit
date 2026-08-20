@@ -207,3 +207,34 @@ def test_agent_findings_are_merged_and_deduped_across_tasks():
     assert len(merged[0].violations) == 2
     assert merged[0].metrics["findings_count"] == 3
     assert merged[0].metrics["high_issues"] == 3
+
+
+def test_forced_deterministic_task_becomes_its_own_skipped_check():
+    plan = {"plan_id": "p1", "tasks": [
+        {"task_id": "global", "kind": "deterministic", "checks": ["duplication", "secrets"]},
+        {"task_id": "review-1", "kind": "agent", "checks": ["agent_review"]},
+    ]}
+    parts = [_fs(max_file_lines=10)]
+
+    table = asyncio.run(review_plan.finalize_plan(
+        plan, parts, config={}, forced_tasks=plan["tasks"],
+    ))
+
+    assert "| duplication | skipped |" in table
+    assert "| secrets | skipped |" in table
+    assert "1 task(s) sem retorno" in table          # só a task de agente conta aqui
+
+
+def test_incompleteness_warning_survives_a_partial_review():
+    plan = {"plan_id": "p2", "tasks": [
+        {"task_id": "review-1", "kind": "agent", "checks": ["agent_review"]},
+        {"task_id": "review-2", "kind": "agent", "checks": ["agent_review"]},
+    ]}
+    parts = [_agent([("a.py", 10, "achado")], severity="medium")]
+
+    table = asyncio.run(review_plan.finalize_plan(
+        plan, parts, config={}, forced_tasks=[plan["tasks"][1]],
+    ))
+
+    assert "| agent_review | warning |" in table     # status vem do finding, não do skipped
+    assert "1 task(s) sem retorno" in table          # e o aviso continua visível

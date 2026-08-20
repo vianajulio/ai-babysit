@@ -7,9 +7,9 @@ das tasks vivem em outros módulos (`app/gates/git_diff.py`,
 """
 from __future__ import annotations
 
-from pydantic import BaseModel
-
 from app.ai.prompts import FINDING_SCHEMA
+from app.gates.changed_file import ChangedFile
+from app.gates.review_tasks import global_task, one_shot_task, review_task, shard_task
 
 # Checks que rodam uma vez sobre a workspace inteira (não são shardáveis: o
 # scan é global e a métrica também é). Ver tabela no topo do plano.
@@ -35,11 +35,6 @@ _DEFAULT_ENABLED: dict[str, bool] = {
     "big_o": False,
     "agent_review": False,
 }
-
-
-class ChangedFile(BaseModel):
-    path: str
-    added_lines: int = 0
 
 
 def enabled_checks(config: dict, names: tuple[str, ...]) -> list[str]:
@@ -123,62 +118,6 @@ def _pack_review_tasks(
     return packed
 
 
-def _review_task(group: list[ChangedFile], task_id: str, plan_id: str) -> dict:
-    return {
-        "task_id": task_id,
-        "kind": "agent",
-        "checks": ["agent_review"],
-        "files": [f.path for f in group],
-        "call": {
-            "tool": "get_task_context",
-            "args": {"plan_id": plan_id, "task_id": task_id},
-        },
-        "submit": {
-            "tool": "submit_task_findings",
-            "args": {"plan_id": plan_id, "task_id": task_id},
-        },
-    }
-
-
-def _one_shot_task(files: list[ChangedFile], workspace: str) -> dict:
-    paths = [f.path for f in files]
-    return {
-        "task_id": "single",
-        "kind": "deterministic",
-        "checks": ["*"],
-        "files": paths,
-        "call": {
-            "tool": "run_local_gate",
-            "args": {"workspace": workspace, "files": paths},
-        },
-    }
-
-
-def _global_task(files: list[ChangedFile], checks: list[str], plan_id: str) -> dict:
-    return {
-        "task_id": "global",
-        "kind": "deterministic",
-        "checks": list(checks),
-        "files": [f.path for f in files],
-        "call": {
-            "tool": "run_review_task",
-            "args": {"plan_id": plan_id, "task_id": "global"},
-        },
-    }
-
-
-def _shard_task(shard: list[ChangedFile], checks: list[str], task_id: str, plan_id: str) -> dict:
-    return {
-        "task_id": task_id,
-        "kind": "deterministic",
-        "checks": list(checks),
-        "files": [f.path for f in shard],
-        "call": {
-            "tool": "run_review_task",
-            "args": {"plan_id": plan_id, "task_id": task_id},
-        },
-    }
-
 
 def build_plan(
     files: list[ChangedFile],
@@ -218,7 +157,7 @@ def build_plan(
             "files_total": files_total,
             "reason": reason,
             "parallel_hint": parallel_hint,
-            "tasks": [_one_shot_task(files, workspace)],
+            "tasks": [one_shot_task(files, workspace)],
             "standards": standards,
             "finding_schema": dict(FINDING_SCHEMA),
         }
@@ -241,20 +180,20 @@ def build_plan(
 
     tasks: list[dict] = []
     if workspace_checks:
-        tasks.append(_global_task(files, workspace_checks, plan_id))
+        tasks.append(global_task(files, workspace_checks, plan_id))
 
     if file_checks:
         shards = _pack_shards(files, max_files_per_shard, max_diff_lines_per_shard)
         for index, shard in enumerate(shards, start=1):
             task_id = f"files-{index}"
-            tasks.append(_shard_task(shard, file_checks, task_id, plan_id))
+            tasks.append(shard_task(shard, file_checks, task_id, plan_id))
 
     if enabled_checks(config, AGENT_SCOPED):
         groups = _pack_review_tasks(
             files, max_files_per_review_task, max_diff_lines_per_review_task
         )
         for index, group in enumerate(groups, start=1):
-            tasks.append(_review_task(group, f"review-{index}", plan_id))
+            tasks.append(review_task(group, f"review-{index}", plan_id))
 
     if not tasks:
         # Nenhum check habilitado para agendar: nada a shardar, devolve

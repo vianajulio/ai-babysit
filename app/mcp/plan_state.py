@@ -4,7 +4,7 @@ import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.gates import review_plan
 from app.gates.models import CheckResult
@@ -32,16 +32,31 @@ def delete_review_plan_records(plan_id: str) -> None:
 
 
 def expire_stale_plans(ttl_minutes: int) -> None:
-    """Limpa planos pendentes mais velhos que `plan_ttl_minutes`, liberando worktrees
-    órfãos deixados por clientes que nunca chamaram `close_review_plan`."""
+    """Limpa planos inativos há mais de `plan_ttl_minutes`, liberando worktrees
+    órfãos deixados por clientes que nunca chamaram `close_review_plan`.
+
+    O corte é por **atividade**, não por criação: um fan-out longo mantém o
+    plano vivo enquanto tasks retornam, e um plano já consolidado (`complete`)
+    que ninguém fechou também expira — era o caso mais comum de worktree
+    vazado, porque o cliente costuma parar na tabela.
+    """
     cutoff = datetime.utcnow() - timedelta(minutes=max(ttl_minutes, 0))
     with database.get_session() as session:
-        stale = session.scalars(
-            select(ReviewPlanRecord).where(
-                ReviewPlanRecord.status == "pending",
-                ReviewPlanRecord.created_at < cutoff,
+        last_activity = {
+            plan_id: updated_at
+            for plan_id, updated_at in session.execute(
+                select(ReviewTaskRecord.plan_id, func.max(ReviewTaskRecord.updated_at))
+                .group_by(ReviewTaskRecord.plan_id)
             )
+        }
+        candidates = session.scalars(
+            select(ReviewPlanRecord).where(ReviewPlanRecord.created_at < cutoff)
         ).all()
+        stale = [
+            record
+            for record in candidates
+            if last_activity.get(record.plan_id, record.created_at) < cutoff
+        ]
         for record in stale:
             try:
                 payload = json.loads(record.payload_json)

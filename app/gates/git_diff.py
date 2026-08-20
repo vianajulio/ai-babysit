@@ -34,7 +34,10 @@ def run_git(
             text=True,
             input=input_text,
             timeout=30,
-            stdin=subprocess.DEVNULL,
+            # `input` e `stdin` são mutuamente exclusivos em subprocess.run;
+            # passar os dois levantava ValueError sempre que havia entrada
+            # (o fallback de árvore vazia em `resolve_commit`).
+            stdin=None if input_text is not None else subprocess.DEVNULL,
         )
     except FileNotFoundError as exc:
         raise RuntimeError("git não está instalado") from exc
@@ -69,11 +72,47 @@ def _safe_relative_path(path_str: str) -> str:
     return path.as_posix()
 
 
+# Um arquivo não rastreado é lido do disco (o git não tem blob dele). Teto e
+# detecção de binário evitam despejar um dump ou um zip no contexto do revisor.
+_MAX_UNTRACKED_BYTES = 512_000
+
+
+def _contained_path(repo_root: Path, relative: str) -> Path | None:
+    """Caminho absoluto dentro do repositório, ou `None` se escapar dele.
+
+    `_safe_relative_path` só olha o texto; um symlink não rastreado apontando
+    para fora (`notas -> ~/.ssh/id_rsa`) passaria por ele e teria o conteúdo
+    lido para dentro do diff entregue ao subagente.
+    """
+    root = repo_root.resolve()
+    candidate = (root / relative).resolve()
+    if candidate == root or root not in candidate.parents:
+        return None
+    return candidate
+
+
+def _read_untracked(repo_root: Path, relative: str) -> str | None:
+    """Conteúdo textual de um arquivo não rastreado, ou `None` se não servir."""
+    target = _contained_path(repo_root, relative)
+    if target is None or target.is_symlink() or not target.is_file():
+        return None
+    try:
+        if target.stat().st_size > _MAX_UNTRACKED_BYTES:
+            return None
+        raw = target.read_bytes()
+    except OSError:
+        return None
+    if b"\0" in raw[:8192]:
+        return None
+    return raw.decode("utf-8", errors="replace")
+
+
 def _untracked_files(repo_root: Path) -> list[ChangedFile]:
     """Arquivos novos ainda não rastreados, com o próprio tamanho como peso.
 
     `git diff` não os enxerga; numa revisão de árvore de trabalho eles costumam
-    ser justamente o código novo que mais interessa revisar.
+    ser justamente o código novo que mais interessa revisar. Binário e arquivo
+    grande demais pesam 0, como o git já faz no `--numstat`.
     """
     output = run_git(["ls-files", "--others", "--exclude-standard", "-z"], repo_root)
     files: list[ChangedFile] = []
@@ -81,13 +120,18 @@ def _untracked_files(repo_root: Path) -> list[ChangedFile]:
         if not path_str:
             continue
         relative = _safe_relative_path(path_str)
-        try:
-            content = (repo_root / relative).read_text(encoding="utf-8", errors="ignore")
-            added_lines = len(content.splitlines())
-        except OSError:
-            added_lines = 0
+        content = _read_untracked(repo_root, relative)
+        added_lines = len(content.splitlines()) if content is not None else 0
         files.append(ChangedFile(path=relative, added_lines=added_lines))
     return files
+
+
+def _is_tracked(repo_root: Path, path: str) -> bool:
+    try:
+        run_git(["ls-files", "--error-unmatch", "--", path], repo_root)
+    except RuntimeError:
+        return False
+    return True
 
 
 def _synthetic_diff(repo_root: Path, path: str) -> str:
@@ -97,10 +141,11 @@ def _synthetic_diff(repo_root: Path, path: str) -> str:
     prefixadas por ``+``), sem depender de `--no-index`, que se comporta de
     forma diferente entre plataformas.
     """
-    try:
-        content = (repo_root / path).read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return ""
+    content = _read_untracked(repo_root, path)
+    if content is None:
+        # Binário, grande demais ou fora da raiz: anuncia em vez de omitir, para
+        # o revisor saber que o arquivo existe e não foi mostrado.
+        return f"--- /dev/null\n+++ b/{path}\nBinary file or too large to show\n"
 
     lines = content.splitlines()
     body = "\n".join(f"+{line}" for line in lines)
@@ -133,7 +178,10 @@ def file_diffs(
             args.append(head)
         args.extend(["--", path])
         output = run_git(args, repo_root, allow_failure=True)
-        if not output.strip() and worktree_mode:
+        if not output.strip() and worktree_mode and not _is_tracked(repo_root, path):
+            # Só arquivo realmente não rastreado ganha diff sintético; um
+            # rastreado com diff vazio (edição revertida entre o plano e a
+            # revisão) seria entregue como se fosse código todo novo.
             output = _synthetic_diff(repo_root, path)
         diffs[path] = output
     return diffs

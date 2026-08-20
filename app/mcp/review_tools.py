@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Annotated
 
 from app.gates import git_diff, review_plan
-from app.gates.models import CheckResult
+from app.gates.models import CheckResult, GateStatus
 from app.gates.orchestrator import run_review_task_gate
 from app.mcp.plan_state import (
     cleanup_plan_runtime,
@@ -88,8 +88,8 @@ async def plan_pr_review(
             # para não multiplicar custo criando um worktree por task.
             temp_root = Path(tempfile.mkdtemp(prefix="babysit-review-plan-"))
             worktree = temp_root / "repo"
-            git(["worktree", "add", "--detach", str(worktree), resolved_head], repo_root)
             added = True
+            git(["worktree", "add", "--detach", str(worktree), resolved_head], repo_root)
 
         plan["volatile"] = volatile
         payload = {
@@ -170,12 +170,11 @@ async def run_review_task(
         done_ids = {t["task_id"] for t in repositories.load_review_tasks(plan_id) if t["status"] == "done"}
         remaining = len(all_ids - done_ids)
 
-        severity = {"passed": 0, "skipped": 0, "warning": 1, "failed": 2, "error": 3}
-        worst = max(
-            (check.status.value for check in results),
-            key=lambda status: severity.get(status, 0),
-            default="passed",
-        )
+        # Mesma ordem da agregação: uma tabela local divergente reportaria
+        # "skipped" para uma task cujos checks passaram.
+        worst = review_plan.worst_status(
+            [check.status for check in results] or [GateStatus.passed]
+        ).value
         violations = sum(len(check.violations) for check in results)
 
         summary = {
@@ -223,13 +222,17 @@ async def get_review_plan(
             return payload["table"]
 
         plan = payload.get("plan", {})
-        all_ids = [task["task_id"] for task in plan.get("tasks", [])]
+        tasks = plan.get("tasks", [])
+        all_ids = [task["task_id"] for task in tasks]
         task_results = repositories.load_review_tasks(plan_id)
         done = {t["task_id"]: t for t in task_results if t["status"] == "done"}
-        pending = [task_id for task_id in all_ids if task_id not in done]
+        pending = [task for task in tasks if task["task_id"] not in done]
 
         if pending and not force:
-            return json.dumps({"status": "pending", "pending_tasks": pending})
+            return json.dumps({
+                "status": "pending",
+                "pending_tasks": [task["task_id"] for task in pending],
+            })
 
         parts = [
             [CheckResult(**check) for check in (done[task_id]["result"] or [])]
@@ -247,6 +250,12 @@ async def get_review_plan(
             run_id=plan_id,
             forced_tasks=pending,
         )
+
+        if pending:
+            # Consolidação forçada não é resultado final: se uma task atrasada
+            # chegar, ela ainda deve entrar no veredito. Cachear como
+            # `complete` congelaria o plano no estado degradado.
+            return table
 
         completed_payload = {**payload, "table": table}
         repositories.save_review_plan(

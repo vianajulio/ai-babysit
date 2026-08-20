@@ -9,7 +9,7 @@ quality_gate:
   checks:
     file_size:
       enabled: true
-      max_lines_per_file: 400
+      max_lines_per_file: 300
       max_lines_per_function: 80
 
     complexity:

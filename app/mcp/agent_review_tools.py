@@ -18,6 +18,26 @@ from app.mcp.runtime import ensure_db, exc_err, mcp
 from app.storage import repositories
 
 
+_TRUNCATION_MARKER = "\n[diff truncado por max_context_chars]\n"
+
+
+def _cut_on_line_boundary(diff: str, budget: int) -> str:
+    """Corta o diff em fronteira de linha e anuncia o corte.
+
+    Cortar em offset arbitrário parte um hunk no meio: o cabeçalho `@@` passa a
+    anunciar mais linhas do que o corpo entregue, e o revisor atribui números de
+    linha errados aos findings.
+    """
+    room = budget - len(_TRUNCATION_MARKER)
+    if room <= 0:
+        return ""
+
+    head = diff[:room]
+    newline = head.rfind("\n")
+    body = head[:newline] if newline > 0 else ""
+    return body + _TRUNCATION_MARKER
+
+
 @mcp.tool()
 async def get_task_context(
     plan_id: Annotated[str, "ID do plano retornado por plan_pr_review"],
@@ -50,7 +70,7 @@ async def get_task_context(
         for path in paths:
             diff = diffs.get(path, "")
             if used + len(diff) > budget:
-                diff = diff[: max(budget - used, 0)]
+                diff = _cut_on_line_boundary(diff, max(budget - used, 0))
                 truncated.append(path)
             used += len(diff)
             files.append({
@@ -94,7 +114,25 @@ async def submit_task_findings(
     só sai de get_review_plan."""
     try:
         ensure_db()
-        _record, _plan, runtime, _task = load_plan_task(plan_id, task_id, kind="agent")
+        record, plan, runtime, task = load_plan_task(plan_id, task_id, kind="agent")
+
+        if record["status"] == "complete":
+            raise ValueError(
+                f"plano '{plan_id}' já foi consolidado: o finding não entraria no veredito. "
+                "Abra um novo plano com plan_pr_review."
+            )
+
+        # Um caminho fora da fatia é alucinação do revisor ou task trocada;
+        # aceitá-lo colocaria na tabela um finding que ninguém pediu.
+        allowed = set(task.get("files", []))
+        foreign = sorted({
+            str(finding.get("file", "")) for finding in (findings or [])
+        } - allowed)
+        if foreign:
+            raise ValueError(
+                f"findings fora da fatia da task '{task_id}': {foreign}; "
+                f"arquivos válidos: {sorted(allowed)}"
+            )
 
         agent_cfg = (
             runtime.get("config", {})
@@ -113,7 +151,7 @@ async def submit_task_findings(
             result=[check.model_dump(mode="json")],
         )
 
-        all_ids = {task["task_id"] for task in _plan.get("tasks", [])}
+        all_ids = {item["task_id"] for item in plan.get("tasks", [])}
         done_ids = {
             stored["task_id"]
             for stored in repositories.load_review_tasks(plan_id)

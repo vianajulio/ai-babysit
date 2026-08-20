@@ -67,7 +67,7 @@ class FileSizeRunner:
 
     def __init__(
         self,
-        max_lines_per_file: int = 400,
+        max_lines_per_file: int = 300,
         max_lines_per_function: int = 80,
         exclude: list[str] | None = None,
     ):

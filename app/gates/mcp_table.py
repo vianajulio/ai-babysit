@@ -38,10 +38,12 @@ def _findings_section(run: dict) -> list[str]:
         return []
 
     lines: list[str] = []
+    # Não filtrar por status: quando pelo menos uma task de agente respondeu, a
+    # agregação eleva o check acima de `skipped` e o aviso sumiria justamente
+    # no caso parcial. A métrica só existe quando houve task forçada.
     skipped = sum(
         int(check.get("metrics", {}).get("skipped_tasks", 0) or 0)
         for check in agent_checks
-        if check.get("status") == "skipped"
     )
     if skipped:
         lines.append("")

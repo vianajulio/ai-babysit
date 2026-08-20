@@ -74,7 +74,9 @@ def _merge_metrics(group: list[CheckResult]) -> dict:
         else:
             # duplication_percent e afins vêm de uma única task (a global);
             # mensagens de erro também não devem ser somadas nem "maximizadas".
-            merged[key] = values[0]
+            # Primeiro valor não nulo: um shard que abortou traz a chave vazia e
+            # descartaria o valor real de outra parte.
+            merged[key] = next((value for value in values if value is not None), values[0])
 
     return merged
 
@@ -134,12 +136,37 @@ def baseline_metrics(checks: list[CheckResult]) -> dict:
     }
 
 
-def _skipped_agent_check(count: int) -> CheckResult:
-    return CheckResult(
-        check="agent_review",
-        status=GateStatus.skipped,
-        metrics={"skipped_tasks": count},
-    )
+def _skipped_checks(forced_tasks: list[dict]) -> list[CheckResult]:
+    """Marcadores para as tasks que não retornaram, um por check afetado.
+
+    Uma task de agente que não voltou é revisão semântica faltando; uma task
+    determinística que não voltou é *medição* faltando, e some da tabela se
+    não for anunciada — quem lê acharia que `duplication` simplesmente passou.
+    Por isso cada família recebe seu próprio marcador em vez de tudo virar
+    `agent_review`.
+    """
+    agent_count = 0
+    deterministic: dict[str, int] = {}
+    for task in forced_tasks:
+        if task.get("kind", "deterministic") == "agent":
+            agent_count += 1
+            continue
+        for check in task.get("checks", []):
+            if check == "*":
+                continue
+            deterministic[check] = deterministic.get(check, 0) + 1
+
+    markers = [
+        CheckResult(check=name, status=GateStatus.skipped, metrics={"skipped_tasks": count})
+        for name, count in deterministic.items()
+    ]
+    if agent_count:
+        markers.append(CheckResult(
+            check="agent_review",
+            status=GateStatus.skipped,
+            metrics={"skipped_tasks": agent_count},
+        ))
+    return markers
 
 
 async def finalize_plan(
@@ -170,7 +197,7 @@ async def finalize_plan(
     run_id = run_id or plan.get("plan_id") or str(uuid.uuid4())
     forced_tasks = list(forced_tasks or [])
     if forced_tasks:
-        parts = [*parts, [_skipped_agent_check(len(forced_tasks))]]
+        parts = [*parts, _skipped_checks(forced_tasks)]
     checks = aggregate_checks(parts)
 
     before_metrics = repositories.load_baseline(repository, branch) if use_ratchet else None

@@ -85,11 +85,20 @@ async def run_commit_gate(
 
         temp_root = Path(tempfile.mkdtemp(prefix="babysit-commit-gate-"))
         worktree = temp_root / "repo"
-        git(["worktree", "add", "--detach", str(worktree), resolved_sha], repo_root)
+        # Marcado antes: se o comando falhar no meio, o registro em
+        # .git/worktrees pode já existir e precisa ser removido no finally.
         added = True
+        git(["worktree", "add", "--detach", str(worktree), resolved_sha], repo_root)
 
         ensure_db()
         selected_repository = repository or auto_repository(str(repo_root), "")
+        if use_ratchet and not branch:
+            # `commit-<sha>` é única por commit: o baseline nunca seria
+            # reencontrado e cada execução gravaria uma linha descartável.
+            raise ValueError(
+                "use_ratchet exige 'branch' explícito: a chave derivada do SHA nunca "
+                "reencontra o baseline anterior"
+            )
         selected_branch = branch or f"commit-{resolved_sha[:12]}"
         before_metrics = (
             repositories.load_baseline(selected_repository, selected_branch)
@@ -136,6 +145,7 @@ async def review_file(
             file_path=file_path,
             code=code,
             diff=diff,
+            review_mode=review_mode,
         )
         result = await ollama.generate_json(prompt)
         return json.dumps(result)
@@ -169,7 +179,11 @@ async def get_gate_run_summary(
         if data is None:
             return json.dumps({"error": f"Execução '{run_id}' não encontrada"})
 
-        failed = [c["check"] for c in data.get("checks", []) if c.get("status") == "failed"]
+        # `error` também é ausência de veredito: contar só `failed` mostraria
+        # "0 falhas" para um check que nem chegou a rodar (ex.: lizard timeout).
+        failed = [
+            c["check"] for c in data.get("checks", []) if c.get("status") in ("failed", "error")
+        ]
         summary = {
             "run_id": run_id,
             "status": data.get("status"),

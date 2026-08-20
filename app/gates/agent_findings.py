@@ -21,6 +21,11 @@ _FINDING_SEVERITY: dict[str, GateStatus] = {
 }
 
 
+# Como `agent_review.block_on` pode chegar da config do projeto, o vocabulário
+# é fechado: `high` reprova, `none` limita o check a warning.
+_BLOCK_ON_MODES: tuple[str, ...] = ("high", "none")
+
+
 def findings_to_check_result(findings: list[dict], block_on: str = "high") -> CheckResult:
     """Converte findings de um subagente em um `CheckResult` do check `agent_review`.
 
@@ -59,8 +64,17 @@ def findings_to_check_result(findings: list[dict], block_on: str = "high") -> Ch
             suggestion=str(finding.get("suggestion", "") or ""),
         ))
 
+    # Denylist invertida seria fail-open: `"High"`, `None` ou chave vazia no
+    # YAML desligariam o bloqueio em silêncio. Normaliza e valida como a
+    # severidade dos próprios findings.
+    mode = str(block_on or "high").strip().lower()
+    if mode not in _BLOCK_ON_MODES:
+        raise ValueError(
+            f"block_on inválido: {block_on!r}; use um de {', '.join(_BLOCK_ON_MODES)}"
+        )
+
     status = worst_status([_FINDING_SEVERITY[v.severity] for v in violations] or [GateStatus.passed])
-    if block_on != "high" and status == GateStatus.failed:
+    if mode == "none" and status == GateStatus.failed:
         status = GateStatus.warning
 
     return CheckResult(

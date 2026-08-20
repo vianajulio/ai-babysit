@@ -114,6 +114,9 @@ def cleanup_worktree(repo_root: Path, worktree: Path | None, temp_root: Path | N
     if worktree is not None:
         try:
             git(["worktree", "remove", "--force", str(worktree)], repo_root, allow_failure=True)
+            # `remove` com allow_failure pode não desregistrar; sem prune fica
+            # uma entrada em .git/worktrees apontando para caminho inexistente.
+            git(["worktree", "prune"], repo_root, allow_failure=True)
         except Exception:
             # Filesystem cleanup below is still required if Git itself is
             # unavailable or cannot unregister a partially-created worktree.
