@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shutil
 import uuid
 from pathlib import Path
@@ -7,7 +8,15 @@ from settings import settings
 
 
 def _workspace_root() -> Path:
-    return Path(settings.babysit_temp_dir)
+    return Path(settings.babysit_temp_dir).resolve()
+
+
+def _git_command(*args: str) -> list[str]:
+    command = ["git"]
+    if os.name == "nt":
+        # Git for Windows needs this per invocation to check out paths over MAX_PATH.
+        command.extend(["-c", "core.longpaths=true"])
+    return [*command, *args]
 
 
 def create_workspace(run_id: str | None = None) -> Path:
@@ -19,10 +28,11 @@ def create_workspace(run_id: str | None = None) -> Path:
 
 async def clone_repository(workspace: Path, clone_url: str) -> None:
     parent = workspace.parent
-    cmd = ["git", "clone", "--depth", "1", clone_url, str(workspace)]
+    cmd = _git_command("clone", "--depth", "1", clone_url, str(workspace))
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(parent),
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -39,12 +49,13 @@ async def clone_repository(workspace: Path, clone_url: str) -> None:
 
 async def checkout_branch(workspace: Path, branch: str) -> None:
     for cmd in [
-        ["git", "fetch", "origin", branch],
-        ["git", "checkout", "-B", branch, "FETCH_HEAD"],
+        _git_command("fetch", "origin", branch),
+        _git_command("checkout", "-B", branch, "FETCH_HEAD"),
     ]:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(workspace),
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

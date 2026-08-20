@@ -1,3 +1,4 @@
+import fnmatch
 import re
 from pathlib import Path
 
@@ -30,6 +31,11 @@ def _is_ignored_file(path: str) -> bool:
     return Path(path).suffix.lower() in _IGNORED_EXTENSIONS or lower_path.endswith(_IGNORED_SUFFIXES)
 
 
+def _matches_any(rel_path: str, patterns: list[str]) -> bool:
+    normalized = rel_path.lstrip("/").replace("\\", "/")
+    return any(fnmatch.fnmatch(normalized, pattern) for pattern in patterns)
+
+
 def _count_function_lines(lines: list[str], max_lines: int) -> list[tuple[int, int]]:
     """Returns list of (start_line, length) for functions exceeding max_lines."""
     violations = []
@@ -59,9 +65,15 @@ def _count_function_lines(lines: list[str], max_lines: int) -> list[tuple[int, i
 class FileSizeRunner:
     name = "file_size"
 
-    def __init__(self, max_lines_per_file: int = 400, max_lines_per_function: int = 80):
+    def __init__(
+        self,
+        max_lines_per_file: int = 400,
+        max_lines_per_function: int = 80,
+        exclude: list[str] | None = None,
+    ):
         self.max_lines_per_file = max_lines_per_file
         self.max_lines_per_function = max_lines_per_function
+        self.exclude = exclude or []
 
     async def run(self, workspace: Path, changed_files: list[str]) -> CheckResult:
         violations: list[Violation] = []
@@ -70,6 +82,8 @@ class FileSizeRunner:
 
         for rel_path in changed_files:
             if _is_ignored_file(rel_path):
+                continue
+            if _matches_any(rel_path, self.exclude):
                 continue
 
             full_path = workspace / rel_path.lstrip("/")

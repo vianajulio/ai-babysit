@@ -11,12 +11,30 @@ def resolve_tool(name: str) -> str:
     if override:
         return override
 
-    for candidate in (
+    candidates = [
         _PROJECT_ROOT / ".venv" / "bin" / name,
+        _PROJECT_ROOT / ".venv" / "Scripts" / name,
         _PROJECT_ROOT / "node_modules" / ".bin" / name,
         _PROJECT_ROOT / "tools" / "bin" / name,
-    ):
-        if candidate.exists():
-            return str(candidate)
+    ]
+    if os.name == "nt":
+        # npm/POSIX shims without an extension are shell scripts that Windows
+        # cannot spawn; prefer the native .cmd/.exe shim first.
+        windows_variants = []
+        for base in candidates:
+            windows_variants.extend(
+                candidate for candidate in (
+                    base.with_name(base.name + ".cmd"),
+                    base.with_name(base.name + ".exe"),
+                    base,
+                )
+            )
+        for candidate in windows_variants:
+            if candidate.exists():
+                return str(candidate)
+    else:
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
 
     return shutil.which(name) or name
