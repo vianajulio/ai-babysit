@@ -20,6 +20,10 @@ class Violation(BaseModel):
     message: str = ""
     current_value: float | None = None
     allowed_value: float | None = None
+    # Preenchidos por findings de subagente (`agent_review`); runners
+    # determinísticos deixam vazio.
+    category: str = ""
+    suggestion: str = ""
 
 
 class CheckResult(BaseModel):

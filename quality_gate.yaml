@@ -44,6 +44,10 @@ quality_gate:
       mode: suggest_only
       comment_on_pr: true
 
+    agent_review:
+      enabled: false        # exige cliente MCP capaz de fan-out de subagente
+      block_on: high        # high | none
+
   pr_review:
     one_shot_max_files: 10
     one_shot_max_diff_lines: 800
@@ -51,3 +55,6 @@ quality_gate:
     max_diff_lines_per_shard: 1200
     parallel_hint: 4
     plan_ttl_minutes: 60
+    max_context_chars: 120000
+    max_files_per_review_task: 6
+    max_diff_lines_per_review_task: 400

@@ -155,3 +155,55 @@ def test_finalize_plan_applies_ratchet_once_over_the_aggregated_result(db):
     # max(60, 90) = 90 < 100 do baseline: não regrediu, continua passed.
     assert "passed" in table
     assert repositories.load_baseline("repo", "main")["file_size.max_file_lines"] == 90
+
+
+def _agent(findings: list[tuple[str, int, str]], severity: str = "high") -> list[CheckResult]:
+    """Um resultado parcial de `agent_review` (uma task de subagente)."""
+    counts = {"high": 0, "medium": 0, "low": 0}
+    violations = []
+    for file_path, line, message in findings:
+        counts[severity] += 1
+        violations.append(
+            Violation(file=file_path, line=line, severity=severity, message=message)
+        )
+    return [
+        CheckResult(
+            check="agent_review",
+            status=GateStatus.failed if severity == "high" else GateStatus.warning,
+            metrics={
+                "high_issues": counts["high"],
+                "medium_issues": counts["medium"],
+                "low_issues": counts["low"],
+                "findings_count": len(violations),
+            },
+            violations=violations,
+        )
+    ]
+
+
+def test_agent_metrics_never_reach_the_baseline():
+    checks = [
+        CheckResult(check="file_size", status=GateStatus.passed, metrics={"max_file_lines": 120}),
+        CheckResult(
+            check="agent_review",
+            status=GateStatus.failed,
+            metrics={"high_issues": 2, "findings_count": 5},
+        ),
+    ]
+
+    assert review_plan.baseline_metrics(checks) == {"file_size.max_file_lines": 120}
+
+
+def test_agent_findings_are_merged_and_deduped_across_tasks():
+    parts = [
+        _agent([("a.py", 10, "X")]),
+        _agent([("a.py", 10, "X"), ("b.py", 3, "Y")]),
+    ]
+
+    merged = aggregate(parts)
+
+    assert len(merged) == 1
+    assert merged[0].check == "agent_review"
+    assert len(merged[0].violations) == 2
+    assert merged[0].metrics["findings_count"] == 3
+    assert merged[0].metrics["high_issues"] == 3

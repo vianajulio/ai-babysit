@@ -299,6 +299,130 @@ anotação de IA. Essas etapas rodam **uma única vez**, dentro de
 ratchet a uma fatia do PR gravaria um baseline com métricas incompletas, e
 anotar cada shard isoladamente geraria sugestões de IA desconexas entre si.
 
+## Review semântica com subagentes
+
+Os checks determinísticos (tamanho, complexidade, duplicação, secrets) rodam no
+servidor. A revisão *semântica* — a que precisa de julgamento — roda fora dele:
+o servidor entrega o contexto fatiado, um subagente do cliente MCP julga com o
+próprio LLM e devolve findings estruturados, e o servidor consolida tudo em um
+único veredito.
+
+Ligue por projeto em `.babysit.yml`:
+
+```yaml
+quality_gate:
+  checks:
+    agent_review:
+      enabled: true      # padrão: false
+      block_on: high     # high (findings high reprovam) | none (teto em warning)
+  pr_review:
+    max_context_chars: 120000
+    max_files_per_review_task: 6
+    max_diff_lines_per_review_task: 400
+```
+
+Com `agent_review.enabled: true`, `plan_pr_review` passa a emitir, além das
+tasks determinísticas, tasks `review-N` (`kind: "agent"`). Elas são particionadas
+por diretório — arquivos do mesmo módulo caem na mesma task — com tetos menores
+que os das shards determinísticas, porque um subagente revisa melhor seis
+arquivos relacionados do que quinze sem relação.
+
+### O ciclo
+
+1. **`plan_pr_review`** — devolve as tasks. Cada task `review-N` traz duas
+   chamadas: `call` (`get_task_context`) e `submit` (`submit_task_findings`).
+2. **`run_review_task`** — fan-out determinístico, como antes. Aceita
+   `detail: "full"` quando o subagente precisa dos `CheckResult` completos da
+   fatia como insumo; o padrão (`summary`) segue enxuto.
+3. **`get_task_context(plan_id, task_id)`** — contexto da fatia: diff por
+   arquivo, `worktree_path` para ler o entorno, `standards` (o
+   `docs/coding-standards.md` do projeto revisado), `finding_schema` e os
+   `deterministic_checks` já calculados para aqueles arquivos. Se o diff não
+   couber em `max_context_chars`, os arquivos cortados vêm em `truncated` —
+   nunca há truncamento silencioso.
+4. **`submit_task_findings(plan_id, task_id, findings)`** — o subagente devolve
+   a lista de findings. Lista vazia é um resultado válido: significa "revisado e
+   limpo". Reenviar a mesma task sobrescreve, não duplica.
+5. **`get_review_plan(plan_id)`** — consolida determinístico + findings na mesma
+   tabela markdown, agora com uma seção `### Findings (agent_review)` abaixo
+   dela (os 20 mais graves; o resto sai em `get_gate_run(run_id)`).
+6. **`close_review_plan(plan_id)`** — limpeza, como antes.
+
+Formato de um finding:
+
+```json
+{
+  "file": "app/gates/review_plan.py",
+  "line": 95,
+  "severity": "high",
+  "category": "correctness",
+  "message": "o problema, uma frase",
+  "suggestion": "a correção concreta"
+}
+```
+
+`high` reprova o gate quando `block_on: high`; `medium` vira `warning`; `low` é
+informativo. **Nada vindo de `agent_review` entra no baseline do ratchet**:
+findings não são reprodutíveis entre execuções, e promovê-los a referência faria
+o ratchet oscilar. Eles continuam no `GateRun` — o que muda é só o que vira
+baseline.
+
+### Task de agente que não volta
+
+Se um subagente morrer ou o cliente desistir da revisão semântica, o plano ficaria
+travado esperando. `get_review_plan(plan_id, force=true)` consolida com o que
+existe, registra `agent_review: skipped` com a contagem de tasks sem retorno e
+**nunca** devolve `passed` limpo — um PR sem a review que foi pedida não pode
+parecer aprovado.
+
+### `mode`: forçar inline ou fan-out
+
+`plan_pr_review` aceita `mode`:
+
+- `auto` (padrão) — decide por `one_shot_max_files` / `one_shot_max_diff_lines`;
+- `inline` — força `one_shot` mesmo num PR grande;
+- `sharded` — força o fan-out mesmo num PR pequeno.
+
+No modo `one_shot` não há tasks `review-N`: o próprio agente principal revisa,
+usando `standards` e `finding_schema`, que também vêm no plano. A régua é a
+mesma nos dois caminhos.
+
+### Review rápida da árvore de trabalho
+
+`head_ref: "WORKTREE"` compara `base_ref` com o checkout atual, incluindo
+arquivos não rastreados, sem criar worktree temporário e sem tocar no seu
+checkout. O plano vem com `"volatile": true`: como você pode editar durante o
+fan-out, o resultado nunca vira baseline. Para revisão de PR de verdade, use uma
+referência commitada.
+
+### O caminho Ollama continua
+
+`big_o` e `ai_review` (que chamam Ollama) seguem disponíveis e desligados por
+padrão. Eles são a alternativa para CI headless, onde não há agente para fazer a
+revisão semântica.
+
+## Estrutura do código
+
+```text
+mcp_server_standalone.py     fachada: registra as tools e roda o stdio
+app/mcp/
+  runtime.py                 instância MCP, init do banco, erro serializado
+  workspace.py               resolução de workspace/arquivos, worktree temporário
+  plan_state.py              estado do plano: expiração, limpeza, leitura de task
+  gate_tools.py              run_local_gate, run_commit_gate, review_file, consultas
+  review_tools.py            plan_pr_review, run_review_task, get_review_plan, close_review_plan
+  agent_review_tools.py      get_task_context, submit_task_findings
+app/gates/
+  review_plan.py             particionamento puro (one_shot/sharded/review-N)
+  review_aggregate.py        agregação, ratchet e fechamento do plano
+  agent_findings.py          findings do subagente -> CheckResult
+  git_diff.py                arquivos alterados, peso e diff (inclui modo WORKTREE)
+  mcp_table.py               tabela markdown + seção de findings
+```
+
+O entrypoint não muda: o cliente MCP continua iniciando
+`mcp_server_standalone.py`.
+
 ## Dependências opcionais
 
 - **gitleaks**: habilita a detecção de secrets. Instale o executável e deixe-o

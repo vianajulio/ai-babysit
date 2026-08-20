@@ -58,3 +58,15 @@ def test_changed_files_rejects_paths_outside_repo(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError):
         git_diff.changed_files_with_weight(repo, base="HEAD~1", head="HEAD")
+
+
+def test_file_diffs_rejects_paths_outside_the_repo(tmp_path):
+    import pytest
+
+    from app.gates import git_diff
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    with pytest.raises(ValueError, match="caminho git inválido"):
+        git_diff.file_diffs(repo, "HEAD", git_diff.WORKTREE_REF, ["../../etc/passwd"])

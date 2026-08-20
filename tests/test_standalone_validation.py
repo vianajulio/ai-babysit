@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import mcp_server_standalone as server
+from app.mcp import gate_tools, review_tools, runtime
 
 
 def _call(workspace, files):
@@ -13,7 +14,7 @@ def _call(workspace, files):
 
 
 def test_run_local_gate_aborts_when_workspace_is_not_a_directory(tmp_path, monkeypatch):
-    monkeypatch.setattr(server, "_ensure_db", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
+    monkeypatch.setattr(gate_tools, "ensure_db", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
     missing_ws = tmp_path / "nope"
 
     result = _call(missing_ws, ["Foo.py"])
@@ -23,7 +24,7 @@ def test_run_local_gate_aborts_when_workspace_is_not_a_directory(tmp_path, monke
 
 
 def test_run_local_gate_aborts_when_no_files(tmp_path, monkeypatch):
-    monkeypatch.setattr(server, "_ensure_db", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
+    monkeypatch.setattr(gate_tools, "ensure_db", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
 
     result = _call(tmp_path, [])
 
@@ -31,7 +32,7 @@ def test_run_local_gate_aborts_when_no_files(tmp_path, monkeypatch):
 
 
 def test_run_local_gate_aborts_when_file_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(server, "_ensure_db", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
+    monkeypatch.setattr(gate_tools, "ensure_db", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
     (tmp_path / "Foo.py").write_text("x = 1\n")
 
     result = _call(tmp_path, ["Foo.py", "Missing.py"])
@@ -43,7 +44,7 @@ def test_run_local_gate_aborts_when_file_missing(tmp_path, monkeypatch):
 
 def test_run_local_gate_resolves_files_relative_to_workspace(tmp_path, monkeypatch):
     """Leading slash is stripped and joined to workspace, mirroring the runners."""
-    monkeypatch.setattr(server, "_ensure_db", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
+    monkeypatch.setattr(gate_tools, "ensure_db", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
     (tmp_path / "Foo.py").write_text("x = 1\n")
 
     result = _call(tmp_path, ["/Foo.py", "/Bar.py"])
@@ -55,7 +56,7 @@ def test_run_local_gate_resolves_files_relative_to_workspace(tmp_path, monkeypat
 
 def test_run_local_gate_passes_validation_when_files_exist(tmp_path, monkeypatch):
     (tmp_path / "Foo.py").write_text("x = 1\n")
-    monkeypatch.setattr(server, "_ensure_db", lambda: None)
+    monkeypatch.setattr(gate_tools, "ensure_db", lambda: None)
 
     captured = {}
 
@@ -63,8 +64,8 @@ def test_run_local_gate_passes_validation_when_files_exist(tmp_path, monkeypatch
         captured.update(kwargs)
         return {"status": "passed", "checks": []}
 
-    monkeypatch.setattr(server, "run_local_quality_gate", fake_gate)
-    monkeypatch.setattr(server, "build_quality_gate_table", lambda result, before: "OK")
+    monkeypatch.setattr(gate_tools, "run_local_quality_gate", fake_gate)
+    monkeypatch.setattr(gate_tools, "build_quality_gate_table", lambda result, before: "OK")
 
     out = asyncio.run(server.run_local_gate(str(tmp_path), ["Foo.py"]))
 
@@ -100,7 +101,7 @@ def test_run_local_gate_rejects_existing_file_outside_workspace(tmp_path, monkey
     workspace.mkdir()
     outside = tmp_path / "outside.py"
     outside.write_text("x = 1\n", encoding="utf-8")
-    monkeypatch.setattr(server, "_ensure_db", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
+    monkeypatch.setattr(gate_tools, "ensure_db", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
 
     result = _call(workspace, [str(outside)])
 
@@ -140,9 +141,9 @@ def test_run_commit_gate_uses_detached_worktree_and_cleans_it(tmp_path, monkeypa
         assert not (kwargs["workspace"] / "deleted.py").exists()
         return {"status": "passed", "checks": []}
 
-    monkeypatch.setattr(server, "_ensure_db", lambda: None)
-    monkeypatch.setattr(server, "run_local_quality_gate", fake_gate)
-    monkeypatch.setattr(server, "build_quality_gate_table", lambda result, before: "OK")
+    monkeypatch.setattr(gate_tools, "ensure_db", lambda: None)
+    monkeypatch.setattr(gate_tools, "run_local_quality_gate", fake_gate)
+    monkeypatch.setattr(gate_tools, "build_quality_gate_table", lambda result, before: "OK")
 
     original_head = git("rev-parse", "HEAD")
     output = asyncio.run(server.run_commit_gate(str(repo), sha))

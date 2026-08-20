@@ -99,3 +99,48 @@ quality_gate:
     config = settings.load_quality_gate_config(tmp_path)
 
     assert config["quality_gate"]["checks"]["file_size"]["exclude"] == ["*Migrations*"]
+
+
+def test_quality_gate_config_exposes_agent_review_defaults():
+    cfg = Settings().load_quality_gate_config()
+    checks = cfg["quality_gate"]["checks"]
+    pr = cfg["quality_gate"]["pr_review"]
+
+    assert checks["agent_review"] == {"enabled": False, "block_on": "high"}
+    assert pr["max_context_chars"] == 120000
+    assert pr["max_files_per_review_task"] == 6
+    assert pr["max_diff_lines_per_review_task"] == 400
+
+
+def test_project_config_can_enable_agent_review(tmp_path):
+    (tmp_path / ".babysit.yml").write_text(
+        """
+quality_gate:
+  checks:
+    agent_review:
+      enabled: true
+      block_on: none
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = settings.load_quality_gate_config(tmp_path)
+    checks = config["quality_gate"]["checks"]
+
+    assert checks["agent_review"]["enabled"] is True
+    assert checks["agent_review"]["block_on"] == "none"
+    assert checks["file_size"]["enabled"] is True
+
+
+def test_standards_are_read_from_the_reviewed_workspace(tmp_path):
+    from pathlib import Path
+
+    from app.ai import prompts
+
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "coding-standards.md").write_text("REGRAS DO PROJETO", encoding="utf-8")
+
+    assert prompts.load_standards(Path(tmp_path)) == "REGRAS DO PROJETO"
+    assert set(prompts.FINDING_SCHEMA) == {
+        "file", "line", "severity", "category", "message", "suggestion",
+    }
