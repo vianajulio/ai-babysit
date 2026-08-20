@@ -11,6 +11,8 @@ quality_gate:
       enabled: true
       max_lines_per_file: 300
       max_lines_per_function: 80
+      # false: arquivo que já existia acima do limite vira warning, não failed.
+      fail_on_existing_files: false
 
     complexity:
       enabled: true

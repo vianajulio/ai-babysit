@@ -36,7 +36,7 @@ def test_duplication_runner_skips_when_jscpd_is_missing(tmp_path, monkeypatch):
     assert result.metrics == {"error": "jscpd não instalado"}
 
 
-def test_duplication_runner_passes_global_duplication_when_no_changed_file_violation(tmp_path, monkeypatch):
+def test_duplication_runner_warns_when_global_duplication_is_absorbed_by_the_filter(tmp_path, monkeypatch):
     changed = tmp_path / "Changed.cs"
     unchanged = tmp_path / "Unchanged.cs"
     changed.write_text("public class Changed {}", encoding="utf-8")
@@ -55,8 +55,11 @@ def test_duplication_runner_passes_global_duplication_when_no_changed_file_viola
         .run(tmp_path, ["Changed.cs"])
     )
 
-    assert result.status == GateStatus.passed
+    # Passar limpo esconderia que 27,5% > 5%: o filtro por arquivo alterado
+    # absorveu o estouro, e quem lê a tabela precisa saber disso.
+    assert result.status == GateStatus.warning
     assert result.metrics["duplication_percent"] == 27.5
+    assert "arquivos alterados" in result.metrics["note"]
     assert result.violations == []
 
 
@@ -407,3 +410,95 @@ def _clone(source_a: str, source_b: str) -> dict:
         "duplicationA": [{"sourceId": source_a, "start": {"line": 1}}],
         "duplicationB": [{"sourceId": source_b, "start": {"line": 1}}],
     }
+
+
+def test_duplication_runner_passes_clean_when_under_the_threshold(tmp_path, monkeypatch):
+    changed = tmp_path / "Changed.cs"
+    changed.write_text("public class Changed {}", encoding="utf-8")
+    report_dir = tmp_path.parent / "reports-under"
+    _write_jscpd_report(report_dir, percentage=1.2, duplicates=[])
+
+    monkeypatch.setattr("app.runners.duplication.asyncio.create_subprocess_exec", _successful_process)
+
+    result = asyncio.run(
+        DuplicationRunner(max_percent=5, fail_only_on_changed_files=True, report_dir=report_dir)
+        .run(tmp_path, ["Changed.cs"])
+    )
+
+    assert result.status == GateStatus.passed
+    assert "note" not in result.metrics
+
+
+def _long_file(path, lines=350):
+    path.write_text("\n".join(f"linha_{i} = {i}" for i in range(lines)), encoding="utf-8")
+
+
+def test_file_size_fails_when_a_new_file_is_born_too_long(tmp_path):
+    from app.runners.file_size import FileSizeRunner
+
+    _long_file(tmp_path / "novo.py")
+
+    result = asyncio.run(
+        FileSizeRunner(max_lines_per_file=300, new_files={"novo.py"}).run(tmp_path, ["novo.py"])
+    )
+
+    assert result.status == GateStatus.failed
+    assert result.violations[0].severity == "high"
+    assert result.metrics["new_file_violations"] == 1
+
+
+def test_file_size_only_warns_for_a_pre_existing_long_file(tmp_path):
+    from app.runners.file_size import FileSizeRunner
+
+    _long_file(tmp_path / "legado.py")
+
+    result = asyncio.run(
+        FileSizeRunner(max_lines_per_file=300, new_files=set()).run(tmp_path, ["legado.py"])
+    )
+
+    # O PR encostou num arquivo que já nascia grande: apontar, não reprovar.
+    assert result.status == GateStatus.warning
+    assert result.violations[0].severity == "medium"
+    assert result.metrics["new_file_violations"] == 0
+
+
+def test_file_size_still_fails_when_origin_is_unknown(tmp_path):
+    from app.runners.file_size import FileSizeRunner
+
+    _long_file(tmp_path / "sem_origem.py")
+
+    result = asyncio.run(
+        FileSizeRunner(max_lines_per_file=300).run(tmp_path, ["sem_origem.py"])
+    )
+
+    # Sem informação de origem o gate não afrouxa: mantém o rigor de antes.
+    assert result.status == GateStatus.failed
+
+
+def test_file_size_can_be_configured_to_fail_on_pre_existing_files(tmp_path):
+    from app.runners.file_size import FileSizeRunner
+
+    _long_file(tmp_path / "legado.py")
+
+    result = asyncio.run(
+        FileSizeRunner(max_lines_per_file=300, new_files=set(), fail_on_existing_files=True)
+        .run(tmp_path, ["legado.py"])
+    )
+
+    assert result.status == GateStatus.failed
+
+
+def test_file_size_fails_when_any_violation_is_in_a_new_file(tmp_path):
+    from app.runners.file_size import FileSizeRunner
+
+    _long_file(tmp_path / "legado.py")
+    _long_file(tmp_path / "novo.py")
+
+    result = asyncio.run(
+        FileSizeRunner(max_lines_per_file=300, new_files={"novo.py"})
+        .run(tmp_path, ["legado.py", "novo.py"])
+    )
+
+    assert result.status == GateStatus.failed
+    assert result.metrics["violations_count"] == 2
+    assert result.metrics["new_file_violations"] == 1

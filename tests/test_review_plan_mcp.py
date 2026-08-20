@@ -57,7 +57,7 @@ def _init_repo(repo, *, force_sharded=False):
     return repo
 
 
-async def _fake_run_review_task_gate(workspace, changed_files, checks):
+async def _fake_run_review_task_gate(workspace, changed_files, checks, new_files=None):
     return [
         CheckResult(check=name, status=GateStatus.passed, metrics={}, violations=[])
         for name in checks

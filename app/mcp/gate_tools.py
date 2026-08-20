@@ -79,7 +79,7 @@ async def run_commit_gate(
             raise ValueError(f"workspace não é um diretório: {workspace}")
 
         repo_root = Path(git(["rev-parse", "--show-toplevel"], requested_workspace).strip()).resolve()
-        resolved_sha, changed_files = commit_files(repo_root, sha, base_commit)
+        resolved_sha, changed_files, new_files = commit_files(repo_root, sha, base_commit)
         if not changed_files:
             raise ValueError("o commit não possui arquivos alterados não-deletados")
 
@@ -111,6 +111,7 @@ async def run_commit_gate(
             repository=selected_repository,
             branch=selected_branch,
             use_ratchet=use_ratchet,
+            new_files=new_files,
         )
         return build_quality_gate_table(result, before_metrics)
     except Exception as exc:

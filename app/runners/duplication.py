@@ -87,15 +87,30 @@ class DuplicationRunner:
                         break
 
             threshold_exceeded = percentage > self.max_percent
-            if self.fail_only_on_changed_files:
-                status = GateStatus.failed if threshold_exceeded and violations else GateStatus.passed
+            metrics: dict = {
+                "duplication_percent": round(percentage, 2),
+                "clone_count": len(clones),
+            }
+
+            if not threshold_exceeded:
+                status = GateStatus.passed
+            elif not self.fail_only_on_changed_files or violations:
+                status = GateStatus.failed
             else:
-                status = GateStatus.failed if threshold_exceeded else GateStatus.passed
+                # O teto global estourou, mas nenhum clone caiu nos arquivos
+                # alterados. Devolver `passed` deixaria a tabela dizendo 25,85%
+                # contra um teto de 5% e mesmo assim "passou", sem explicação.
+                status = GateStatus.warning
+                metrics["note"] = (
+                    f"duplicação global {percentage:.2f}% acima do teto "
+                    f"({self.max_percent}%), mas nenhum clone nos arquivos alterados "
+                    "(fail_only_on_changed_files)"
+                )
 
             return CheckResult(
                 check=self.name,
                 status=status,
-                metrics={"duplication_percent": round(percentage, 2), "clone_count": len(clones)},
+                metrics=metrics,
                 violations=violations,
             )
         finally:

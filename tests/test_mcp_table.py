@@ -116,3 +116,32 @@ def test_run_without_agent_findings_keeps_the_current_output():
 
     assert "###" not in table
     assert table.splitlines()[-1] == "| file_size | passed | max_file_lines | - | 10 | sem baseline |"
+
+
+def test_table_prints_check_notes_below_the_table():
+    table = build_quality_gate_table({
+        "run_id": "run-note",
+        "status": "warning",
+        "checks": [{
+            "check": "duplication",
+            "status": "warning",
+            "metrics": {
+                "duplication_percent": 25.85,
+                "note": "duplicação global 25.85% acima do teto (5%), mas nenhum clone nos arquivos alterados",
+            },
+            "violations": [],
+        }],
+    })
+
+    assert "| duplication | warning | duplication_percent |" in table
+    assert "### Observações" in table
+    assert "duplication: duplicação global 25.85%" in table
+
+
+def test_note_is_not_rendered_as_a_metric_row():
+    table = build_quality_gate_table({
+        "checks": [{"check": "duplication", "status": "warning",
+                    "metrics": {"note": "algo"}, "violations": []}],
+    })
+
+    assert "| duplication | warning | note |" not in table

@@ -153,6 +153,35 @@ quality_gate:
 O gate local analisa somente os arquivos informados. Ele não faz checkout,
 commit, push ou alteração de código do projeto consumidor.
 
+## Código novo x código legado
+
+`file_size` distingue o que a mudança criou do que ela apenas encostou:
+
+- arquivo **criado** nesta mudança acima do limite → violação `high`, check
+  `failed`;
+- arquivo que **já existia** acima do limite → violação `medium`, check
+  `warning`, com uma linha em `### Observações` explicando por quê.
+
+Sem isso, tocar um arquivo legado de 800 linhas fazia o PR herdar a dívida
+inteira dele. A origem vem do status do git (`A` no diff do PR, ou arquivo
+ainda não rastreado no gate local); quando não há repositório git para
+consultar, o gate não afrouxa: trata tudo como novo e mantém o rigor.
+
+Para exigir o limite também no legado:
+
+```yaml
+quality_gate:
+  checks:
+    file_size:
+      fail_on_existing_files: true
+```
+
+`duplication` segue a mesma linha de honestidade: com
+`fail_only_on_changed_files: true`, um percentual global acima do teto que não
+toca nenhum arquivo alterado não reprova — mas devolve `warning` com a
+observação, em vez de um `passed` limpo que contradiz a métrica na própria
+tabela.
+
 ## Analisar um commit: `run_commit_gate`
 
 `run_commit_gate` é a ferramenta MCP disponível para analisar um commit sem

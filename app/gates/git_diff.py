@@ -6,17 +6,21 @@ de revisão de PR em partes.
 import subprocess
 from pathlib import Path
 
-from pydantic import BaseModel
-
+from app.gates.changed_file import ChangedFile
 
 # Sentinela aceita no lugar de `head`: compara `base` com a árvore de trabalho
 # atual (incluindo arquivos não rastreados) em vez de com um commit.
 WORKTREE_REF = "WORKTREE"
 
-
-class ChangedFile(BaseModel):
-    path: str
-    added_lines: int
+__all__ = [
+    "ChangedFile",
+    "WORKTREE_REF",
+    "changed_files_with_weight",
+    "file_diffs",
+    "new_paths",
+    "resolve_commit",
+    "run_git",
+]
 
 
 def run_git(
@@ -122,8 +126,35 @@ def _untracked_files(repo_root: Path) -> list[ChangedFile]:
         relative = _safe_relative_path(path_str)
         content = _read_untracked(repo_root, relative)
         added_lines = len(content.splitlines()) if content is not None else 0
-        files.append(ChangedFile(path=relative, added_lines=added_lines))
+        files.append(ChangedFile(path=relative, added_lines=added_lines, status="A"))
     return files
+
+
+def _name_status(repo_root: Path, base: str, head: str) -> dict[str, str]:
+    """Status do git por arquivo (`A`, `M`, `R`…) entre `base` e `head`.
+
+    Vem de uma chamada separada porque `--numstat` traz o peso mas não o
+    status, e o gate precisa dos dois: peso para balancear as fatias, status
+    para saber se um arquivo nasceu nesta mudança.
+    """
+    args = ["diff", "--name-status", "-z", "--no-renames", "--diff-filter=ACMRT", base]
+    if head != WORKTREE_REF:
+        args.append(head)
+    output = run_git(args, repo_root, allow_failure=True)
+
+    fields = [field for field in output.split("\0") if field]
+    statuses: dict[str, str] = {}
+    for status, path_str in zip(fields[::2], fields[1::2]):
+        try:
+            statuses[_safe_relative_path(path_str)] = status[:1].upper()
+        except ValueError:
+            continue
+    return statuses
+
+
+def new_paths(files) -> set[str]:
+    """Caminhos criados por esta mudança, prontos para o `file_size`."""
+    return {file.path for file in files if file.status.upper().startswith("A")}
 
 
 def _is_tracked(repo_root: Path, path: str) -> bool:
@@ -196,6 +227,7 @@ def changed_files_with_weight(repo_root: Path, base: str, head: str) -> list[Cha
     Com `head == WORKTREE_REF`, compara `base` com a árvore de trabalho atual e
     inclui os arquivos não rastreados.
     """
+    statuses = _name_status(repo_root, base, head)
     worktree_mode = head == WORKTREE_REF
     diff_args = ["diff", "--numstat", "-z", "--no-renames", "--diff-filter=ACMRT", base]
     if not worktree_mode:
@@ -208,9 +240,12 @@ def changed_files_with_weight(repo_root: Path, base: str, head: str) -> list[Cha
             continue
         added_str, _removed_str, path_str = record.split("\t", 2)
         added_lines = 0 if added_str == "-" else int(added_str)
-        changed_files.append(
-            ChangedFile(path=_safe_relative_path(path_str), added_lines=added_lines)
-        )
+        relative = _safe_relative_path(path_str)
+        changed_files.append(ChangedFile(
+            path=relative,
+            added_lines=added_lines,
+            status=statuses.get(relative, "M"),
+        ))
 
     if worktree_mode:
         known = {file.path for file in changed_files}

@@ -110,6 +110,9 @@ async def plan_pr_review(
                 "base": resolved_base,
                 "head": resolved_head,
                 "weights": {file.path: file.added_lines for file in changed_files},
+                # Origem por arquivo: só o que nasceu nesta mudança reprova por
+                # tamanho; o resto vira aviso (ver FileSizeRunner).
+                "new_files": sorted(git_diff.new_paths(changed_files)),
             },
         }
         repositories.save_review_plan(
@@ -157,6 +160,7 @@ async def run_review_task(
             workspace=Path(workspace_path),
             changed_files=task["files"],
             checks=task["checks"],
+            new_files=set(runtime.get("new_files", [])),
         )
 
         repositories.save_review_task_result(

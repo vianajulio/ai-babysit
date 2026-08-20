@@ -97,17 +97,17 @@ def resolve_local_files(workspace: Path, files: list[str]) -> list[str]:
 git = git_diff.run_git
 
 
-def commit_files(repo_root: Path, sha: str, base_commit: str | None) -> tuple[str, list[str]]:
+def commit_files(
+    repo_root: Path, sha: str, base_commit: str | None
+) -> tuple[str, list[str], set[str]]:
     if not sha or not sha.strip():
         raise ValueError("SHA do commit é obrigatório")
 
     resolved_sha = git_diff.resolve_commit(repo_root, sha)
     resolved_base = git_diff.resolve_commit(repo_root, base_commit if base_commit else f"{resolved_sha}^")
 
-    changed_files = [
-        file.path for file in git_diff.changed_files_with_weight(repo_root, resolved_base, resolved_sha)
-    ]
-    return resolved_sha, changed_files
+    files = git_diff.changed_files_with_weight(repo_root, resolved_base, resolved_sha)
+    return resolved_sha, [file.path for file in files], git_diff.new_paths(files)
 
 
 def cleanup_worktree(repo_root: Path, worktree: Path | None, temp_root: Path | None) -> None:

@@ -43,7 +43,7 @@ def test_changed_files_with_weight_between_refs(tmp_path):
     repo = _init_repo(tmp_path)
     files = git_diff.changed_files_with_weight(repo, base="HEAD~1", head="HEAD")
 
-    assert files == [git_diff.ChangedFile(path="src/foo.py", added_lines=12)]
+    assert files == [git_diff.ChangedFile(path="src/foo.py", added_lines=12, status="A")]
 
 
 def test_changed_files_rejects_paths_outside_repo(tmp_path, monkeypatch):
@@ -120,3 +120,32 @@ def test_untracked_binary_file_weighs_zero_and_has_no_diff_body(tmp_path):
 
     assert weights["blob.bin"] == 0
     assert "Binary file" in diffs["blob.bin"]
+
+
+def test_changed_files_carry_their_git_status(tmp_path):
+    import subprocess
+
+    from app.gates import git_diff
+
+    repo = _repo(tmp_path)
+    (repo / "a.py").write_text("v = 2\n", encoding="utf-8")
+    (repo / "novo.py").write_text("v = 3\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "change"], cwd=repo, check=True, capture_output=True)
+
+    files = {f.path: f for f in git_diff.changed_files_with_weight(repo, "HEAD~1", "HEAD")}
+
+    assert files["a.py"].status == "M"
+    assert files["novo.py"].status == "A"
+    assert git_diff.new_paths(files.values()) == {"novo.py"}
+
+
+def test_untracked_files_count_as_added_in_worktree_mode(tmp_path):
+    from app.gates import git_diff
+
+    repo = _repo(tmp_path)
+    (repo / "solto.py").write_text("v = 1\n", encoding="utf-8")
+
+    files = git_diff.changed_files_with_weight(repo, "HEAD", git_diff.WORKTREE_REF)
+
+    assert git_diff.new_paths(files) == {"solto.py"}

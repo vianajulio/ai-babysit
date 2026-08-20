@@ -70,10 +70,22 @@ class FileSizeRunner:
         max_lines_per_file: int = 300,
         max_lines_per_function: int = 80,
         exclude: list[str] | None = None,
+        new_files: set[str] | None = None,
+        fail_on_existing_files: bool = False,
     ):
         self.max_lines_per_file = max_lines_per_file
         self.max_lines_per_function = max_lines_per_function
         self.exclude = exclude or []
+        # Arquivos criados por esta mudança. `None` significa "origem
+        # desconhecida": nesse caso todo arquivo é tratado como novo, para o
+        # gate nunca afrouxar por falta de informação.
+        self.new_files = new_files
+        self.fail_on_existing_files = fail_on_existing_files
+
+    def _is_new(self, rel_path: str) -> bool:
+        if self.new_files is None:
+            return True
+        return rel_path.lstrip("/").replace("\\", "/") in self.new_files
 
     async def run(self, workspace: Path, changed_files: list[str]) -> CheckResult:
         violations: list[Violation] = []
@@ -97,11 +109,17 @@ class FileSizeRunner:
 
             max_file_lines = max(max_file_lines, len(lines))
 
+            is_new = self._is_new(rel_path)
+            origin = "" if is_new else " — arquivo já existente antes desta mudança"
+
             if len(lines) > self.max_lines_per_file:
                 violations.append(Violation(
                     file=rel_path,
-                    severity="medium",
-                    message=f"Arquivo com {len(lines)} linhas (limite: {self.max_lines_per_file})",
+                    severity="high" if is_new else "medium",
+                    message=(
+                        f"Arquivo com {len(lines)} linhas "
+                        f"(limite: {self.max_lines_per_file}){origin}"
+                    ),
                     current_value=len(lines),
                     allowed_value=self.max_lines_per_file,
                 ))
@@ -114,20 +132,40 @@ class FileSizeRunner:
                 violations.append(Violation(
                     file=rel_path,
                     line=start,
-                    severity="low",
-                    message=f"Função com {length} linhas (limite: {self.max_lines_per_function})",
+                    severity="high" if is_new else "low",
+                    message=(
+                        f"Função com {length} linhas "
+                        f"(limite: {self.max_lines_per_function}){origin}"
+                    ),
                     current_value=length,
                     allowed_value=self.max_lines_per_function,
                 ))
 
-        status = GateStatus.failed if violations else GateStatus.passed
+        # Arquivo que o PR criou reprova; arquivo que já era grande e foi
+        # apenas encostado vira aviso — senão todo PR que toca um legado herda
+        # a dívida inteira dele. `fail_on_existing_files` traz o rigor antigo.
+        new_violations = [v for v in violations if self._is_new(v.file)]
+        metrics = {
+            "violations_count": len(violations),
+            "new_file_violations": len(new_violations),
+            "max_file_lines": max_file_lines,
+            "max_function_lines": max_function_lines,
+        }
+
+        if not violations:
+            status = GateStatus.passed
+        elif new_violations or self.fail_on_existing_files:
+            status = GateStatus.failed
+        else:
+            status = GateStatus.warning
+            metrics["note"] = (
+                f"{len(violations)} violação(ões) apenas em arquivos que já existiam "
+                "antes desta mudança; use fail_on_existing_files para reprovar também"
+            )
+
         return CheckResult(
             check=self.name,
             status=status,
-            metrics={
-                "violations_count": len(violations),
-                "max_file_lines": max_file_lines,
-                "max_function_lines": max_function_lines,
-            },
+            metrics=metrics,
             violations=violations,
         )

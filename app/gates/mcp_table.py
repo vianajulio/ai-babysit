@@ -21,6 +21,25 @@ def _trend(before: Any, after: Any) -> str:
     return "igual"
 
 
+def _notes_section(run: dict) -> list[str]:
+    """Notas textuais que um check anexou a `metrics["note"]`.
+
+    A tabela só sabe imprimir número, então um veredito que depende de contexto
+    ("o teto estourou mas o filtro absorveu") sairia sem explicação nenhuma.
+    """
+    notes = [
+        (check.get("check", "-"), check["metrics"]["note"])
+        for check in run.get("checks", [])
+        if (check.get("metrics") or {}).get("note")
+    ]
+    if not notes:
+        return []
+
+    lines = ["", "### Observações"]
+    lines.extend(f"- {name}: {note}" for name, note in notes)
+    return lines
+
+
 _MAX_LISTED_FINDINGS = 20
 _FINDING_ORDER = {"high": 0, "medium": 1, "low": 2}
 
@@ -120,5 +139,6 @@ def build_quality_gate_table(run: dict, before_metrics: dict | None = None) -> s
                 f"{_format_value(before)} | {_format_value(after)} | {_trend(before, after)} |"
             )
 
+    lines.extend(_notes_section(run))
     lines.extend(_findings_section(run))
     return "\n".join(lines)
