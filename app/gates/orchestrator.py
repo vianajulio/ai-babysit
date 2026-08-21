@@ -24,8 +24,12 @@ def _build_runners(
     if checks.get("file_size", {}).get("enabled", True):
         cfg = checks.get("file_size", {})
         runners.append(FileSizeRunner(
-            max_lines_per_file=cfg.get("max_lines_per_file", 300),
+            max_lines_per_file=cfg.get("max_lines_per_file", 350),
             max_lines_per_function=cfg.get("max_lines_per_function", 80),
+            warn_lines_per_file=cfg.get("warn_lines_per_file"),
+            warn_lines_per_function=cfg.get("warn_lines_per_function"),
+            count_mode=cfg.get("count_mode", "code"),
+            languages=cfg.get("languages", {}),
             exclude=cfg.get("exclude", []),
             new_files=new_files,
             fail_on_existing_files=cfg.get("fail_on_existing_files", False),

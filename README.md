@@ -153,6 +153,49 @@ quality_gate:
 O gate local analisa somente os arquivos informados. Ele não faz checkout,
 commit, push ou alteração de código do projeto consumidor.
 
+## Tamanho de arquivo: alvo, teto e contagem
+
+O limite existe para o arquivo caber na cabeça de quem lê — humano ou agente.
+Por isso são dois patamares e a contagem ignora o que não é instrução:
+
+```yaml
+quality_gate:
+  checks:
+    file_size:
+      warn_lines_per_file: 200      # alvo: avisa
+      max_lines_per_file: 350       # teto: reprova
+      warn_lines_per_function: 60
+      max_lines_per_function: 80
+      count_mode: code              # code | raw
+      languages:
+        rust:
+          warn_lines_per_file: 300
+          max_lines_per_file: 500
+          max_lines_per_function: 120
+          exclude_test_blocks: true
+        csharp:
+          warn_lines_per_file: 250
+          max_lines_per_file: 400
+```
+
+- **Dois patamares.** Entre `warn_*` e `max_*` a violação sai como `low` e o
+  check vira `warning`: sinal para dividir antes de virar bloqueio. Acima de
+  `max_*` reprova (respeitando a regra de origem da seção seguinte).
+- **`count_mode: code`** (padrão) ignora linha em branco, comentário de linha,
+  bloco `/* */` e docstring de Python. Contar linha bruta pune quem documenta e
+  premia quem apaga comentário — um arquivo de 600 linhas de `///` em Rust
+  conta o código que realmente tem.
+- **`languages:`** sobrescreve qualquer chave por linguagem (detectada pela
+  extensão). Um teto único trata Rust e Python como se custassem o mesmo por
+  linha.
+- **`exclude_test_blocks`** tira da contagem o `#[cfg(test)] mod tests` que o
+  Rust mantém no arquivo de produção; sem isso, escrever teste engorda o
+  arquivo que o gate mede.
+
+Referência de custo, medida neste repositório (~9 tokens por linha de Python):
+200 linhas ≈ 1,8k tokens, 350 ≈ 3,2k, 800 ≈ 7k. O alvo de 200 é o ponto em que
+um arquivo ainda é uma ideia só.
+
 ## Código novo x código legado
 
 `file_size` distingue o que a mudança criou do que ela apenas encostou:

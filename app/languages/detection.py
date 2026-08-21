@@ -19,6 +19,11 @@ _EXT_MAP = {
 }
 
 
+def detect_language(file_path: str) -> str:
+    """Linguagem de um arquivo pela extensão, ou `any` quando desconhecida."""
+    return _EXT_MAP.get(Path(file_path).suffix.lower(), "any")
+
+
 def detect_languages(file_paths: list[str]) -> set[str]:
     langs = set()
     for path in file_paths:

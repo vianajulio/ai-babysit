@@ -502,3 +502,82 @@ def test_file_size_fails_when_any_violation_is_in_a_new_file(tmp_path):
     assert result.status == GateStatus.failed
     assert result.metrics["violations_count"] == 2
     assert result.metrics["new_file_violations"] == 1
+
+
+def test_file_size_warns_between_the_target_and_the_hard_limit(tmp_path):
+    from app.runners.file_size import FileSizeRunner
+
+    _long_file(tmp_path / "novo.py", lines=260)
+
+    result = asyncio.run(
+        FileSizeRunner(warn_lines_per_file=200, max_lines_per_file=350, new_files={"novo.py"})
+        .run(tmp_path, ["novo.py"])
+    )
+
+    # Passou do alvo mas não do teto: avisa mesmo sendo arquivo novo.
+    assert result.status == GateStatus.warning
+    assert result.violations[0].severity == "low"
+    assert "alvo" in result.violations[0].message
+
+
+def test_file_size_counts_code_lines_by_default(tmp_path):
+    from app.runners.file_size import FileSizeRunner
+
+    body = "\n".join(f"# comentário {i}" for i in range(400))
+    (tmp_path / "doc.py").write_text(body + "\nx = 1\n", encoding="utf-8")
+
+    result = asyncio.run(
+        FileSizeRunner(max_lines_per_file=300, new_files={"doc.py"}).run(tmp_path, ["doc.py"])
+    )
+
+    # 401 linhas brutas, 1 de código: comentar não pode reprovar o arquivo.
+    assert result.status == GateStatus.passed
+    assert result.metrics["max_file_lines"] == 1
+
+
+def test_file_size_raw_mode_restores_the_old_counting(tmp_path):
+    from app.runners.file_size import FileSizeRunner
+
+    body = "\n".join(f"# comentário {i}" for i in range(400))
+    (tmp_path / "doc.py").write_text(body, encoding="utf-8")
+
+    result = asyncio.run(
+        FileSizeRunner(max_lines_per_file=300, count_mode="raw", new_files={"doc.py"})
+        .run(tmp_path, ["doc.py"])
+    )
+
+    assert result.status == GateStatus.failed
+
+
+def test_rust_uses_its_own_limits_and_ignores_inline_tests(tmp_path):
+    from app.runners.file_size import FileSizeRunner
+
+    production = "\n".join(f"let x{i} = {i};" for i in range(320))
+    tests = "#[cfg(test)]\nmod tests {\n" + "\n".join(
+        f"    assert_eq!({i}, {i});" for i in range(200)
+    ) + "\n}\n"
+    (tmp_path / "lib.rs").write_text(production + "\n" + tests, encoding="utf-8")
+
+    languages = {"rust": {"max_lines_per_file": 500, "exclude_test_blocks": True}}
+    result = asyncio.run(
+        FileSizeRunner(max_lines_per_file=300, languages=languages, new_files={"lib.rs"})
+        .run(tmp_path, ["lib.rs"])
+    )
+
+    # 520 linhas de código no total, 320 fora dos testes: abaixo do teto do Rust.
+    assert result.status == GateStatus.passed
+    assert result.metrics["max_file_lines"] == 320
+
+
+def test_language_override_does_not_leak_to_other_languages(tmp_path):
+    from app.runners.file_size import FileSizeRunner
+
+    _long_file(tmp_path / "grande.py", lines=320)
+    languages = {"rust": {"max_lines_per_file": 500}}
+
+    result = asyncio.run(
+        FileSizeRunner(max_lines_per_file=300, languages=languages, new_files={"grande.py"})
+        .run(tmp_path, ["grande.py"])
+    )
+
+    assert result.status == GateStatus.failed

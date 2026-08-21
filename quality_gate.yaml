@@ -9,10 +9,27 @@ quality_gate:
   checks:
     file_size:
       enabled: true
-      max_lines_per_file: 300
+      # Dois patamares: `warn_*` é o alvo (avisa), `max_*` é o teto (reprova).
+      warn_lines_per_file: 200
+      max_lines_per_file: 350
+      warn_lines_per_function: 60
       max_lines_per_function: 80
+      # `code` ignora linha em branco, comentário e docstring: contar linha
+      # bruta pune quem documenta e premia quem apaga comentário.
+      count_mode: code
       # false: arquivo que já existia acima do limite vira warning, não failed.
       fail_on_existing_files: false
+      languages:
+        rust:
+          # Testes vivem no mesmo arquivo por convenção da linguagem, e o tipo
+          # ocupa mais linha que em Python/TS.
+          warn_lines_per_file: 300
+          max_lines_per_file: 500
+          max_lines_per_function: 120
+          exclude_test_blocks: true
+        csharp:
+          warn_lines_per_file: 250
+          max_lines_per_file: 400
 
     complexity:
       enabled: true

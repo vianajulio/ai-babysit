@@ -144,3 +144,15 @@ def test_standards_are_read_from_the_reviewed_workspace(tmp_path):
     assert set(prompts.FINDING_SCHEMA) == {
         "file", "line", "severity", "category", "message", "suggestion",
     }
+
+
+def test_file_size_defaults_have_two_tiers_and_language_overrides():
+    cfg = Settings().load_quality_gate_config()
+    file_size = cfg["quality_gate"]["checks"]["file_size"]
+
+    assert file_size["warn_lines_per_file"] == 200
+    assert file_size["max_lines_per_file"] == 350
+    assert file_size["count_mode"] == "code"
+    assert file_size["languages"]["rust"]["max_lines_per_file"] == 500
+    assert file_size["languages"]["rust"]["exclude_test_blocks"] is True
+    assert file_size["languages"]["csharp"]["max_lines_per_file"] == 400
