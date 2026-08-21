@@ -41,6 +41,10 @@ quality_gate:
       enabled: true
       tool: jscpd
       max_percent: 5
+      # Somado aos ignores fixos (.venv, node_modules, dist, build). Use para
+      # tirar da conta o que duplica por natureza, como teste tabelado:
+      #   ignore: ["**/tests/**", "**/*_test.*", "**/*.spec.*"]
+      ignore: []
       cannot_increase: true
       fail_only_on_changed_files: true
 

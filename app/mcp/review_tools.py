@@ -253,6 +253,7 @@ async def get_review_plan(
             use_ratchet=runtime.get("use_ratchet", False),
             run_id=plan_id,
             forced_tasks=pending,
+            workspace=Path(runtime.get("repo_root") or record["workspace"]),
         )
 
         if pending:

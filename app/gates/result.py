@@ -1,6 +1,22 @@
 from app.gates.models import CheckResult, GateRun, GateStatus
 
 
+def config_notes(workspace) -> list[str]:
+    """Avisos sobre a execução, hoje só a ausência de config do projeto.
+
+    Um relatório que não diz de onde vieram os limites obriga quem lê a
+    adivinhar se `300 linhas` é regra do time ou default da ferramenta.
+    """
+    from settings import project_config_path
+
+    if workspace is None or project_config_path(workspace) is not None:
+        return []
+    return [
+        "sem .babysit.yml no projeto: usando os defaults globais do Babysit "
+        "(crie o arquivo na raiz para definir os limites do time)"
+    ]
+
+
 def consolidate(run_id: str, pr_id: int, checks: list[CheckResult], **kwargs) -> GateRun:
     if any(c.status == GateStatus.failed for c in checks):
         overall = GateStatus.failed

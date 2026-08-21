@@ -27,7 +27,8 @@ def _notes_section(run: dict) -> list[str]:
     A tabela só sabe imprimir número, então um veredito que depende de contexto
     ("o teto estourou mas o filtro absorveu") sairia sem explicação nenhuma.
     """
-    notes = [
+    notes = [("", note) for note in run.get("notes", []) if note]
+    notes += [
         (check.get("check", "-"), check["metrics"]["note"])
         for check in run.get("checks", [])
         if (check.get("metrics") or {}).get("note")
@@ -36,7 +37,7 @@ def _notes_section(run: dict) -> list[str]:
         return []
 
     lines = ["", "### Observações"]
-    lines.extend(f"- {name}: {note}" for name, note in notes)
+    lines.extend(f"- {name}: {note}" if name else f"- {note}" for name, note in notes)
     return lines
 
 

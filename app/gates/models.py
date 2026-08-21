@@ -43,5 +43,8 @@ class GateRun(BaseModel):
     target_branch: str = ""
     status: GateStatus
     checks: list[CheckResult] = Field(default_factory=list)
+    # Avisos sobre a execução em si (config ausente, modo volátil), que não
+    # pertencem a nenhum check.
+    notes: list[str] = Field(default_factory=list)
     comment_posted: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow)

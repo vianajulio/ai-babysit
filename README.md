@@ -153,6 +153,35 @@ quality_gate:
 O gate local analisa somente os arquivos informados. Ele não faz checkout,
 commit, push ou alteração de código do projeto consumidor.
 
+## Quando o gate pede configuração
+
+O Babysit nunca edita o `.babysit.yml` do projeto que ele avalia — um gate que
+afrouxa o próprio critério sem aparecer no diff não serve para nada. Em vez
+disso ele diz o que configurar, na hora em que isso importa:
+
+- **Sem `.babysit.yml`**, toda tabela traz em `### Observações` que os limites
+  são defaults globais do Babysit, não regra do projeto. Sem essa linha, quem
+  lê o relatório não sabe se `300 linhas` foi decisão do time ou palpite da
+  ferramenta.
+- **Duplicação concentrada em teste**: quando o teto estoura e mais da metade
+  dos clones está em arquivo de teste (≥20 clones), a observação traz a chave
+  pronta:
+
+  ```
+  - duplication: 1136 clones, 71% em arquivos de teste. Para tirá-los da conta,
+    em .babysit.yml: quality_gate.checks.duplication.ignore: ["**/tests/**", …]
+  ```
+
+  Teste tabelado duplica por natureza — o mesmo `assert` com dados diferentes —
+  e um percentual dominado por eles esconde a duplicação que interessa.
+
+`duplication.ignore` é **somado** aos ignores fixos (`.venv`, `node_modules`,
+`dist`, `build`), nunca os substitui: ignorar `node_modules` não é preferência
+de projeto, é o que faz o número significar alguma coisa.
+
+O agente MCP não precisa conhecer nenhuma flag de linha de comando do `jscpd`:
+o contrato é a config, e a observação diz exatamente qual chave mexer.
+
 ## Tamanho de arquivo: alvo, teto e contagem
 
 O limite existe para o arquivo caber na cabeça de quem lê — humano ou agente.

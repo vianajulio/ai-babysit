@@ -7,6 +7,7 @@ um plano.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 from app.gates import ratchet, result
 from app.gates.mcp_table import build_quality_gate_table
@@ -178,7 +179,8 @@ async def finalize_plan(
     branch: str = "local",
     use_ratchet: bool = False,
     run_id: str = "",
-    forced_tasks: list[str] | None = None,
+    forced_tasks: list[dict] | None = None,
+    workspace: "Path | None" = None,
 ) -> str:
     """Fecha um plano de revisão: agrega, aplica ratchet/IA uma única vez, persiste.
 
@@ -212,6 +214,8 @@ async def finalize_plan(
         source_branch=branch,
         target_branch=branch,
     )
+
+    gate_run = gate_run.model_copy(update={"notes": result.config_notes(workspace)})
 
     if forced_tasks and gate_run.status == GateStatus.passed:
         # Consolidar sem a revisão semântica que foi pedida não pode devolver um

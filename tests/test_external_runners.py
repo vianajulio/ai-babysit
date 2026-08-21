@@ -581,3 +581,69 @@ def test_language_override_does_not_leak_to_other_languages(tmp_path):
     )
 
     assert result.status == GateStatus.failed
+
+
+def test_duplication_ignore_patterns_reach_the_command(tmp_path, monkeypatch):
+    captured = {}
+
+    async def _capture(*cmd, **kwargs):
+        captured["cmd"] = cmd
+        return await _successful_process(*cmd, **kwargs)
+
+    report_dir = tmp_path.parent / "reports-ignore"
+    _write_jscpd_report(report_dir, percentage=0.0, duplicates=[])
+    monkeypatch.setattr("app.runners.duplication.asyncio.create_subprocess_exec", _capture)
+
+    asyncio.run(
+        DuplicationRunner(report_dir=report_dir, ignore=["**/tests/**", "**/*_test.rs"])
+        .run(tmp_path, [])
+    )
+
+    ignore_arg = captured["cmd"][captured["cmd"].index("--ignore") + 1]
+    assert "**/tests/**" in ignore_arg
+    assert "**/*_test.rs" in ignore_arg
+    assert "**/node_modules/**" in ignore_arg      # defaults continuam
+
+
+def test_duplication_suggests_ignoring_tests_when_clones_are_mostly_there(tmp_path, monkeypatch):
+    changed = tmp_path / "src" / "lib.rs"
+    changed.parent.mkdir()
+    changed.write_text("fn main() {}", encoding="utf-8")
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+
+    clones = [
+        _clone(str(tests_dir / f"caso_{i}.rs"), str(tests_dir / f"caso_{i+1}.rs"))
+        for i in range(24)
+    ]
+    clones.append(_clone(str(changed), str(changed)))
+    report_dir = tmp_path.parent / "reports-tests"
+    _write_jscpd_report(report_dir, percentage=25.85, duplicates=clones)
+
+    monkeypatch.setattr("app.runners.duplication.asyncio.create_subprocess_exec", _successful_process)
+
+    result = asyncio.run(
+        DuplicationRunner(max_percent=5, report_dir=report_dir).run(tmp_path, ["src/lib.rs"])
+    )
+    note = result.metrics["note"]
+
+    assert "clones" in note
+    assert "teste" in note
+    assert "duplication.ignore" in note
+    assert "**/tests/**" in note
+
+
+def test_duplication_does_not_suggest_when_clones_are_in_production_code(tmp_path, monkeypatch):
+    src = tmp_path / "src"
+    src.mkdir()
+    clones = [_clone(str(src / f"m{i}.rs"), str(src / f"m{i+1}.rs")) for i in range(24)]
+    report_dir = tmp_path.parent / "reports-prod"
+    _write_jscpd_report(report_dir, percentage=25.85, duplicates=clones)
+
+    monkeypatch.setattr("app.runners.duplication.asyncio.create_subprocess_exec", _successful_process)
+
+    result = asyncio.run(
+        DuplicationRunner(max_percent=5, report_dir=report_dir).run(tmp_path, ["src/m0.rs"])
+    )
+
+    assert "duplication.ignore" not in result.metrics.get("note", "")

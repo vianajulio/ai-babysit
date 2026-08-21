@@ -3,6 +3,7 @@ import uuid
 from pathlib import Path
 
 from app.gates import ratchet, result
+from app.gates.result import config_notes
 from app.gates.models import CheckResult, GateRun, GateStatus
 from app.runners.complexity import ComplexityRunner
 from app.runners.duplication import DuplicationRunner
@@ -47,6 +48,7 @@ def _build_runners(
         runners.append(DuplicationRunner(
             max_percent=cfg.get("max_percent", 5.0),
             fail_only_on_changed_files=cfg.get("fail_only_on_changed_files", False),
+            ignore=cfg.get("ignore", []),
         ))
 
     if checks.get("secrets", {}).get("enabled", True):
@@ -201,6 +203,7 @@ async def run_local_quality_gate(
         source_branch=branch,
         target_branch=branch,
     )
+    gate_run = gate_run.model_copy(update={"notes": config_notes(workspace)})
 
     current_metrics = ratchet.extract_metrics(checks)
     if use_ratchet and gate_run.status == GateStatus.passed:

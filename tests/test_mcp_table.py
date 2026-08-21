@@ -145,3 +145,14 @@ def test_note_is_not_rendered_as_a_metric_row():
     })
 
     assert "| duplication | warning | note |" not in table
+
+
+def test_table_prints_run_level_notes():
+    table = build_quality_gate_table({
+        "notes": ["sem .babysit.yml no projeto: usando os defaults globais do Babysit"],
+        "checks": [{"check": "file_size", "status": "passed",
+                    "metrics": {"max_file_lines": 10}, "violations": []}],
+    })
+
+    assert "### Observações" in table
+    assert "sem .babysit.yml" in table

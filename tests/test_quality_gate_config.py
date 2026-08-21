@@ -156,3 +156,14 @@ def test_file_size_defaults_have_two_tiers_and_language_overrides():
     assert file_size["languages"]["rust"]["max_lines_per_file"] == 500
     assert file_size["languages"]["rust"]["exclude_test_blocks"] is True
     assert file_size["languages"]["csharp"]["max_lines_per_file"] == 400
+
+
+def test_project_config_path_reports_whether_the_project_has_its_own_config(tmp_path):
+    from settings import project_config_path
+
+    assert project_config_path(tmp_path) is None
+
+    config_file = tmp_path / ".babysit.yml"
+    config_file.write_text("quality_gate: {}\n", encoding="utf-8")
+
+    assert project_config_path(tmp_path) == config_file
