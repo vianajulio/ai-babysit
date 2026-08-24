@@ -121,7 +121,7 @@ quality_gate:
   checks:
     file_size:
       enabled: true
-      max_lines_per_file: 400
+      max_lines_per_file: 300
       max_lines_per_function: 80
 
     complexity:
@@ -152,6 +152,107 @@ quality_gate:
 
 O gate local analisa somente os arquivos informados. Ele não faz checkout,
 commit, push ou alteração de código do projeto consumidor.
+
+## Quando o gate pede configuração
+
+O Babysit nunca edita o `.babysit.yml` do projeto que ele avalia — um gate que
+afrouxa o próprio critério sem aparecer no diff não serve para nada. Em vez
+disso ele diz o que configurar, na hora em que isso importa:
+
+- **Sem `.babysit.yml`**, toda tabela traz em `### Observações` que os limites
+  são defaults globais do Babysit, não regra do projeto. Sem essa linha, quem
+  lê o relatório não sabe se `300 linhas` foi decisão do time ou palpite da
+  ferramenta.
+- **Duplicação concentrada em teste**: quando o teto estoura e mais da metade
+  dos clones está em arquivo de teste (≥20 clones), a observação traz a chave
+  pronta:
+
+  ```
+  - duplication: 1136 clones, 71% em arquivos de teste. Para tirá-los da conta,
+    em .babysit.yml: quality_gate.checks.duplication.ignore: ["**/tests/**", …]
+  ```
+
+  Teste tabelado duplica por natureza — o mesmo `assert` com dados diferentes —
+  e um percentual dominado por eles esconde a duplicação que interessa.
+
+`duplication.ignore` é **somado** aos ignores fixos (`.venv`, `node_modules`,
+`dist`, `build`), nunca os substitui: ignorar `node_modules` não é preferência
+de projeto, é o que faz o número significar alguma coisa.
+
+O agente MCP não precisa conhecer nenhuma flag de linha de comando do `jscpd`:
+o contrato é a config, e a observação diz exatamente qual chave mexer.
+
+## Tamanho de arquivo: alvo, teto e contagem
+
+O limite existe para o arquivo caber na cabeça de quem lê — humano ou agente.
+Por isso são dois patamares e a contagem ignora o que não é instrução:
+
+```yaml
+quality_gate:
+  checks:
+    file_size:
+      warn_lines_per_file: 200      # alvo: avisa
+      max_lines_per_file: 350       # teto: reprova
+      warn_lines_per_function: 60
+      max_lines_per_function: 80
+      count_mode: code              # code | raw
+      languages:
+        rust:
+          warn_lines_per_file: 300
+          max_lines_per_file: 500
+          max_lines_per_function: 120
+          exclude_test_blocks: true
+        csharp:
+          warn_lines_per_file: 250
+          max_lines_per_file: 400
+```
+
+- **Dois patamares.** Entre `warn_*` e `max_*` a violação sai como `low` e o
+  check vira `warning`: sinal para dividir antes de virar bloqueio. Acima de
+  `max_*` reprova (respeitando a regra de origem da seção seguinte).
+- **`count_mode: code`** (padrão) ignora linha em branco, comentário de linha,
+  bloco `/* */` e docstring de Python. Contar linha bruta pune quem documenta e
+  premia quem apaga comentário — um arquivo de 600 linhas de `///` em Rust
+  conta o código que realmente tem.
+- **`languages:`** sobrescreve qualquer chave por linguagem (detectada pela
+  extensão). Um teto único trata Rust e Python como se custassem o mesmo por
+  linha.
+- **`exclude_test_blocks`** tira da contagem o `#[cfg(test)] mod tests` que o
+  Rust mantém no arquivo de produção; sem isso, escrever teste engorda o
+  arquivo que o gate mede.
+
+Referência de custo, medida neste repositório (~9 tokens por linha de Python):
+200 linhas ≈ 1,8k tokens, 350 ≈ 3,2k, 800 ≈ 7k. O alvo de 200 é o ponto em que
+um arquivo ainda é uma ideia só.
+
+## Código novo x código legado
+
+`file_size` distingue o que a mudança criou do que ela apenas encostou:
+
+- arquivo **criado** nesta mudança acima do limite → violação `high`, check
+  `failed`;
+- arquivo que **já existia** acima do limite → violação `medium`, check
+  `warning`, com uma linha em `### Observações` explicando por quê.
+
+Sem isso, tocar um arquivo legado de 800 linhas fazia o PR herdar a dívida
+inteira dele. A origem vem do status do git (`A` no diff do PR, ou arquivo
+ainda não rastreado no gate local); quando não há repositório git para
+consultar, o gate não afrouxa: trata tudo como novo e mantém o rigor.
+
+Para exigir o limite também no legado:
+
+```yaml
+quality_gate:
+  checks:
+    file_size:
+      fail_on_existing_files: true
+```
+
+`duplication` segue a mesma linha de honestidade: com
+`fail_only_on_changed_files: true`, um percentual global acima do teto que não
+toca nenhum arquivo alterado não reprova — mas devolve `warning` com a
+observação, em vez de um `passed` limpo que contradiz a métrica na própria
+tabela.
 
 ## Analisar um commit: `run_commit_gate`
 
@@ -298,6 +399,142 @@ anotação de IA. Essas etapas rodam **uma única vez**, dentro de
 `get_review_plan`, sobre o resultado já agregado de todas as tasks — aplicar
 ratchet a uma fatia do PR gravaria um baseline com métricas incompletas, e
 anotar cada shard isoladamente geraria sugestões de IA desconexas entre si.
+
+## Review semântica com subagentes
+
+Os checks determinísticos (tamanho, complexidade, duplicação, secrets) rodam no
+servidor. A revisão *semântica* — a que precisa de julgamento — roda fora dele:
+o servidor entrega o contexto fatiado, um subagente do cliente MCP julga com o
+próprio LLM e devolve findings estruturados, e o servidor consolida tudo em um
+único veredito.
+
+Ligue por projeto em `.babysit.yml`:
+
+```yaml
+quality_gate:
+  checks:
+    agent_review:
+      enabled: true      # padrão: false
+      block_on: high     # high (findings high reprovam) | none (teto em warning)
+  pr_review:
+    max_context_chars: 120000
+    max_files_per_review_task: 6
+    max_diff_lines_per_review_task: 400
+```
+
+Com `agent_review.enabled: true`, `plan_pr_review` passa a emitir, além das
+tasks determinísticas, tasks `review-N` (`kind: "agent"`). Elas são particionadas
+por diretório — arquivos do mesmo módulo caem na mesma task — com tetos menores
+que os das shards determinísticas, porque um subagente revisa melhor seis
+arquivos relacionados do que quinze sem relação.
+
+### O ciclo
+
+1. **`plan_pr_review`** — devolve as tasks. Cada task `review-N` traz duas
+   chamadas: `call` (`get_task_context`) e `submit` (`submit_task_findings`).
+2. **`run_review_task`** — fan-out determinístico, como antes. Aceita
+   `detail: "full"` quando o subagente precisa dos `CheckResult` completos da
+   fatia como insumo; o padrão (`summary`) segue enxuto.
+3. **`get_task_context(plan_id, task_id)`** — contexto da fatia: diff por
+   arquivo, `worktree_path` para ler o entorno, `standards` (o
+   `docs/coding-standards.md` do projeto revisado), `finding_schema` e os
+   `deterministic_checks` já calculados para aqueles arquivos. Se o diff não
+   couber em `max_context_chars`, os arquivos cortados vêm em `truncated` —
+   nunca há truncamento silencioso.
+4. **`submit_task_findings(plan_id, task_id, findings)`** — o subagente devolve
+   a lista de findings. Lista vazia é um resultado válido: significa "revisado e
+   limpo". Reenviar a mesma task sobrescreve, não duplica.
+5. **`get_review_plan(plan_id)`** — consolida determinístico + findings na mesma
+   tabela markdown, agora com uma seção `### Findings (agent_review)` abaixo
+   dela (os 20 mais graves; o resto sai em `get_gate_run(run_id)`).
+6. **`close_review_plan(plan_id)`** — limpeza, como antes.
+
+Formato de um finding:
+
+```json
+{
+  "file": "app/gates/review_plan.py",
+  "line": 95,
+  "severity": "high",
+  "category": "correctness",
+  "message": "o problema, uma frase",
+  "suggestion": "a correção concreta"
+}
+```
+
+`high` reprova o gate quando `block_on: high`; `medium` vira `warning`; `low` é
+informativo. `block_on` aceita apenas `high` ou `none` (a comparação é
+normalizada): um valor inventado é recusado em vez de desligar o bloqueio em
+silêncio. Um finding cujo `file` não pertence à fatia da task é rejeitado, e um
+`submit` em plano já consolidado também — nos dois casos o finding não chegaria
+ao veredito. **Nada vindo de `agent_review` entra no baseline do ratchet**:
+findings não são reprodutíveis entre execuções, e promovê-los a referência faria
+o ratchet oscilar. Eles continuam no `GateRun` — o que muda é só o que vira
+baseline.
+
+### Task de agente que não volta
+
+Se um subagente morrer ou o cliente desistir da revisão semântica, o plano ficaria
+travado esperando. `get_review_plan(plan_id, force=true)` consolida com o que
+existe, registra `skipped` com a contagem de tasks sem retorno e **nunca**
+devolve `passed` limpo — um PR sem a review que foi pedida não pode parecer
+aprovado. Task de agente faltando vira `agent_review: skipped`; task
+determinística faltando vira `skipped` no próprio check (`duplication`,
+`secrets`…), para nenhuma medição sumir da tabela sem aviso.
+
+Consolidação forçada **não** encerra o plano: se uma task atrasada chegar
+depois, ela ainda entra no veredito da próxima chamada. Planos inativos há mais
+de `plan_ttl_minutes` — contados pela última atividade das tasks, não pela
+criação — são expirados na próxima chamada a `plan_pr_review`, inclusive os já
+consolidados que ninguém fechou.
+
+### `mode`: forçar inline ou fan-out
+
+`plan_pr_review` aceita `mode`:
+
+- `auto` (padrão) — decide por `one_shot_max_files` / `one_shot_max_diff_lines`;
+- `inline` — força `one_shot` mesmo num PR grande;
+- `sharded` — força o fan-out mesmo num PR pequeno.
+
+No modo `one_shot` não há tasks `review-N`: o próprio agente principal revisa,
+usando `standards` e `finding_schema`, que também vêm no plano. A régua é a
+mesma nos dois caminhos.
+
+### Review rápida da árvore de trabalho
+
+`head_ref: "WORKTREE"` compara `base_ref` com o checkout atual, incluindo
+arquivos não rastreados, sem criar worktree temporário e sem tocar no seu
+checkout. O plano vem com `"volatile": true`: como você pode editar durante o
+fan-out, o resultado nunca vira baseline. Para revisão de PR de verdade, use uma
+referência commitada.
+
+### O caminho Ollama continua
+
+`big_o` e `ai_review` (que chamam Ollama) seguem disponíveis e desligados por
+padrão. Eles são a alternativa para CI headless, onde não há agente para fazer a
+revisão semântica.
+
+## Estrutura do código
+
+```text
+mcp_server_standalone.py     fachada: registra as tools e roda o stdio
+app/mcp/
+  runtime.py                 instância MCP, init do banco, erro serializado
+  workspace.py               resolução de workspace/arquivos, worktree temporário
+  plan_state.py              estado do plano: expiração, limpeza, leitura de task
+  gate_tools.py              run_local_gate, run_commit_gate, review_file, consultas
+  review_tools.py            plan_pr_review, run_review_task, get_review_plan, close_review_plan
+  agent_review_tools.py      get_task_context, submit_task_findings
+app/gates/
+  review_plan.py             particionamento puro (one_shot/sharded/review-N)
+  review_aggregate.py        agregação, ratchet e fechamento do plano
+  agent_findings.py          findings do subagente -> CheckResult
+  git_diff.py                arquivos alterados, peso e diff (inclui modo WORKTREE)
+  mcp_table.py               tabela markdown + seção de findings
+```
+
+O entrypoint não muda: o cliente MCP continua iniciando
+`mcp_server_standalone.py`.
 
 ## Dependências opcionais
 

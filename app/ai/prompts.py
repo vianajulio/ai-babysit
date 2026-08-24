@@ -3,12 +3,60 @@ from pathlib import Path
 from settings import settings
 
 
-def load_standards() -> str:
+# Fonte única do formato de finding devolvido por um subagente revisor.
+# Consumido pelo plano de revisão (`plan_pr_review`) e por `get_task_context`,
+# para que a régua seja a mesma em qualquer cliente MCP.
+FINDING_SCHEMA: dict[str, str] = {
+    "file": "caminho relativo à raiz revisada",
+    "line": "int ou null",
+    "severity": "high | medium | low",
+    "category": "correctness | security | performance | design | test | style",
+    "message": "o problema, uma frase",
+    "suggestion": "a correção concreta",
+}
+
+
+def load_standards(workspace: Path | None = None) -> str:
+    """Lê o padrão de código do projeto revisado.
+
+    Resolve `settings.standards_path` dentro de `workspace` quando informado —
+    o servidor MCP roda de um checkout separado, então o caminho relativo ao
+    CWD apontaria para o padrão do próprio Babysit, não o do projeto.
+    """
+    if workspace is not None:
+        candidate = Path(workspace) / settings.standards_path
+        if candidate.exists():
+            return candidate.read_text(encoding="utf-8")
+
     path = Path(settings.standards_path)
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-def build_review_prompt(standards: str, language: str, file_path: str, code: str, diff: str | None) -> str:
+# Como o modo chega da config/tool, o vocabulário é fechado: um valor inventado
+# escolheria silenciosamente o rigor errado.
+REVIEW_MODES: dict[str, str] = {
+    "strict": "aponte todo problema real, inclusive os de média gravidade",
+    "suggest_only": (
+        "não reprove o código; trate cada apontamento como sugestão de melhoria"
+    ),
+    "lenient": "aponte apenas problemas graves; ignore estilo e detalhe menor",
+}
+
+
+def build_review_prompt(
+    standards: str,
+    language: str,
+    file_path: str,
+    code: str,
+    diff: str | None,
+    review_mode: str = "strict",
+) -> str:
+    mode = str(review_mode or "strict").strip().lower()
+    if mode not in REVIEW_MODES:
+        raise ValueError(
+            f"review_mode inválido: {review_mode!r}; use um de {', '.join(REVIEW_MODES)}"
+        )
+
     diff_section = f"\n[DIFF]\n{diff}" if diff else ""
     return f"""Você é um revisor de código especializado em C#, .NET, Clean Architecture, SOLID, EF Core e APIs REST.
 
@@ -20,6 +68,7 @@ Use obrigatoriamente o padrão de código abaixo:
 Analise o código abaixo.
 
 Regras:
+- Modo de revisão ({mode}): {REVIEW_MODES[mode]}
 - Não reescreva o arquivo inteiro.
 - Aponte apenas problemas reais.
 - Classifique cada problema como low, medium ou high.

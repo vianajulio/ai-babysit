@@ -1,0 +1,9 @@
+quality_gate:
+  checks:
+    agent_review:
+      enabled: true
+      block_on: high
+
+  pr_review:
+    max_files_per_review_task: 6
+    max_diff_lines_per_review_task: 400

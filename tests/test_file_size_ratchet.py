@@ -8,7 +8,8 @@ from app.runners.file_size import FileSizeRunner
 def test_file_size_reports_line_metrics(tmp_path):
     workspace = tmp_path
     rel_path = "ContaRepository.cs"
-    (workspace / rel_path).write_text("\n".join(["// line"] * 276), encoding="utf-8")
+    # Linhas de código de verdade: no modo `code` (padrão) comentário não conta.
+    (workspace / rel_path).write_text("\n".join(["var x = 1;"] * 276), encoding="utf-8")
 
     result = asyncio.run(FileSizeRunner(max_lines_per_file=80).run(workspace, [rel_path]))
 
@@ -37,7 +38,7 @@ public class ContaRepository(DbContext context)
     result = asyncio.run(FileSizeRunner(max_lines_per_file=400, max_lines_per_function=80).run(workspace, [rel_path]))
 
     assert result.status == GateStatus.passed
-    assert result.metrics["max_file_lines"] == 27
+    assert result.metrics["max_file_lines"] == 25      # 27 brutas, 2 em branco
     assert result.metrics["max_function_lines"] == 0
     assert result.violations == []
 

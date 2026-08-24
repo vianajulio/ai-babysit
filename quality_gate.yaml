@@ -9,8 +9,27 @@ quality_gate:
   checks:
     file_size:
       enabled: true
-      max_lines_per_file: 400
+      # Dois patamares: `warn_*` é o alvo (avisa), `max_*` é o teto (reprova).
+      warn_lines_per_file: 200
+      max_lines_per_file: 350
+      warn_lines_per_function: 60
       max_lines_per_function: 80
+      # `code` ignora linha em branco, comentário e docstring: contar linha
+      # bruta pune quem documenta e premia quem apaga comentário.
+      count_mode: code
+      # false: arquivo que já existia acima do limite vira warning, não failed.
+      fail_on_existing_files: false
+      languages:
+        rust:
+          # Testes vivem no mesmo arquivo por convenção da linguagem, e o tipo
+          # ocupa mais linha que em Python/TS.
+          warn_lines_per_file: 300
+          max_lines_per_file: 500
+          max_lines_per_function: 120
+          exclude_test_blocks: true
+        csharp:
+          warn_lines_per_file: 250
+          max_lines_per_file: 400
 
     complexity:
       enabled: true
@@ -22,6 +41,10 @@ quality_gate:
       enabled: true
       tool: jscpd
       max_percent: 5
+      # Somado aos ignores fixos (.venv, node_modules, dist, build). Use para
+      # tirar da conta o que duplica por natureza, como teste tabelado:
+      #   ignore: ["**/tests/**", "**/*_test.*", "**/*.spec.*"]
+      ignore: []
       cannot_increase: true
       fail_only_on_changed_files: true
 
@@ -44,6 +67,10 @@ quality_gate:
       mode: suggest_only
       comment_on_pr: true
 
+    agent_review:
+      enabled: false        # exige cliente MCP capaz de fan-out de subagente
+      block_on: high        # high | none
+
   pr_review:
     one_shot_max_files: 10
     one_shot_max_diff_lines: 800
@@ -51,3 +78,6 @@ quality_gate:
     max_diff_lines_per_shard: 1200
     parallel_hint: 4
     plan_ttl_minutes: 60
+    max_context_chars: 120000
+    max_files_per_review_task: 6
+    max_diff_lines_per_review_task: 400

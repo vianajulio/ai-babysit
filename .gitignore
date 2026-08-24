@@ -4,4 +4,7 @@ node_modules/
 __pycache__/
 *.pyc
 babysit.db
+# Arquivos auxiliares do modo WAL do SQLite.
+babysit.db-shm
+babysit.db-wal
 .env

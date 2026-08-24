@@ -3,6 +3,7 @@ import uuid
 from pathlib import Path
 
 from app.gates import ratchet, result
+from app.gates.result import config_notes
 from app.gates.models import CheckResult, GateRun, GateStatus
 from app.runners.complexity import ComplexityRunner
 from app.runners.duplication import DuplicationRunner
@@ -13,16 +14,26 @@ from app.workspaces import manager
 from settings import settings
 
 
-def _build_runners(config: dict, only: list[str] | None = None) -> list:
+def _build_runners(
+    config: dict,
+    only: list[str] | None = None,
+    new_files: set[str] | None = None,
+) -> list:
     checks = config.get("quality_gate", {}).get("checks", {})
     runners = []
 
     if checks.get("file_size", {}).get("enabled", True):
         cfg = checks.get("file_size", {})
         runners.append(FileSizeRunner(
-            max_lines_per_file=cfg.get("max_lines_per_file", 400),
+            max_lines_per_file=cfg.get("max_lines_per_file", 350),
             max_lines_per_function=cfg.get("max_lines_per_function", 80),
+            warn_lines_per_file=cfg.get("warn_lines_per_file"),
+            warn_lines_per_function=cfg.get("warn_lines_per_function"),
+            count_mode=cfg.get("count_mode", "code"),
+            languages=cfg.get("languages", {}),
             exclude=cfg.get("exclude", []),
+            new_files=new_files,
+            fail_on_existing_files=cfg.get("fail_on_existing_files", False),
         ))
 
     if checks.get("complexity", {}).get("enabled", True):
@@ -37,6 +48,7 @@ def _build_runners(config: dict, only: list[str] | None = None) -> list:
         runners.append(DuplicationRunner(
             max_percent=cfg.get("max_percent", 5.0),
             fail_only_on_changed_files=cfg.get("fail_only_on_changed_files", False),
+            ignore=cfg.get("ignore", []),
         ))
 
     if checks.get("secrets", {}).get("enabled", True):
@@ -62,13 +74,34 @@ def _build_runners(config: dict, only: list[str] | None = None) -> list:
     return runners
 
 
+def _derive_new_files(workspace: Path, changed_files: list[str]) -> set[str] | None:
+    """Quais dos arquivos analisados ainda não são rastreados pelo git.
+
+    Sem um diff de PR, essa é a única pista de origem disponível: arquivo que o
+    git não conhece foi criado agora. Fora de um repositório devolve `None`
+    (origem desconhecida), e aí o gate mantém o rigor de reprovar qualquer
+    violação em vez de afrouxar sem saber.
+    """
+    from app.gates import git_diff
+
+    normalized = [path.lstrip("/").replace("\\", "/") for path in changed_files]
+    try:
+        tracked_output = git_diff.run_git(["ls-files", "-z", "--", *normalized], workspace)
+    except RuntimeError:
+        return None
+
+    tracked = {path for path in tracked_output.split("\0") if path}
+    return {path for path in normalized if path not in tracked}
+
+
 async def _run_checks(
     workspace: Path,
     changed_files: list[str],
     only: list[str] | None = None,
+    new_files: set[str] | None = None,
 ) -> list[CheckResult]:
     config = settings.load_quality_gate_config(workspace)
-    runners = _build_runners(config, only=only)
+    runners = _build_runners(config, only=only, new_files=new_files)
     checks: list[CheckResult] = []
 
     for runner in runners:
@@ -150,10 +183,13 @@ async def run_local_quality_gate(
     repository: str = "local",
     branch: str = "local",
     use_ratchet: bool = False,
+    new_files: set[str] | None = None,
 ) -> dict:
     run_id = str(uuid.uuid4())
     config = settings.load_quality_gate_config(workspace)
-    checks = await _run_checks(workspace, changed_files)
+    checks = await _run_checks(
+        workspace, changed_files, new_files=new_files or _derive_new_files(workspace, changed_files)
+    )
 
     baseline = repositories.load_baseline(repository, branch) if use_ratchet else None
     checks = ratchet.apply(checks, baseline)
@@ -167,6 +203,7 @@ async def run_local_quality_gate(
         source_branch=branch,
         target_branch=branch,
     )
+    gate_run = gate_run.model_copy(update={"notes": config_notes(workspace)})
 
     current_metrics = ratchet.extract_metrics(checks)
     if use_ratchet and gate_run.status == GateStatus.passed:
@@ -181,6 +218,7 @@ async def run_review_task_gate(
     workspace: Path,
     changed_files: list[str],
     checks: list[str],
+    new_files: set[str] | None = None,
 ) -> list[CheckResult]:
     """Run only the checks requested for one review-plan task.
 
@@ -190,7 +228,7 @@ async def run_review_task_gate(
     applying ratchet/baseline to a partial slice of the PR would record a
     baseline (or a pass/fail verdict) derived from an incomplete diff.
     """
-    return await _run_checks(workspace, changed_files, only=checks)
+    return await _run_checks(workspace, changed_files, only=checks, new_files=new_files)
 
 
 async def run_quality_gate(pr_id: int) -> dict:

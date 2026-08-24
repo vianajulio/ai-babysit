@@ -21,6 +21,90 @@ def _trend(before: Any, after: Any) -> str:
     return "igual"
 
 
+def _notes_section(run: dict) -> list[str]:
+    """Notas textuais que um check anexou a `metrics["note"]`.
+
+    A tabela só sabe imprimir número, então um veredito que depende de contexto
+    ("o teto estourou mas o filtro absorveu") sairia sem explicação nenhuma.
+    """
+    notes = [("", note) for note in run.get("notes", []) if note]
+    notes += [
+        (check.get("check", "-"), check["metrics"]["note"])
+        for check in run.get("checks", [])
+        if (check.get("metrics") or {}).get("note")
+    ]
+    if not notes:
+        return []
+
+    lines = ["", "### Observações"]
+    lines.extend(f"- {name}: {note}" if name else f"- {note}" for name, note in notes)
+    return lines
+
+
+_MAX_LISTED_FINDINGS = 20
+_FINDING_ORDER = {"high": 0, "medium": 1, "low": 2}
+
+
+def _findings_section(run: dict) -> list[str]:
+    """Lista os findings de `agent_review` abaixo da tabela.
+
+    A tabela só sabe imprimir métrica numérica, então sem esta seção uma
+    revisão semântica com dezenas de achados sairia como uma linha vazia. O
+    corte em 20 evita devolver um markdown gigante ao contexto do agente
+    principal — o restante continua no `GateRun`.
+    """
+    agent_checks = [check for check in run.get("checks", []) if check.get("check") == "agent_review"]
+    if not agent_checks:
+        return []
+
+    lines: list[str] = []
+    # Não filtrar por status: quando pelo menos uma task de agente respondeu, a
+    # agregação eleva o check acima de `skipped` e o aviso sumiria justamente
+    # no caso parcial. A métrica só existe quando houve task forçada.
+    skipped = sum(
+        int(check.get("metrics", {}).get("skipped_tasks", 0) or 0)
+        for check in agent_checks
+    )
+    if skipped:
+        lines.append("")
+        lines.append(
+            f"_agent_review: {skipped} task(s) sem retorno — revisão semântica incompleta._"
+        )
+
+    violations = [
+        violation for check in agent_checks for violation in (check.get("violations") or [])
+    ]
+    if not violations:
+        return lines
+
+    ordered = sorted(
+        violations,
+        key=lambda violation: _FINDING_ORDER.get(str(violation.get("severity", "")).lower(), 3),
+    )
+    lines.append("")
+    lines.append("### Findings (agent_review)")
+    for violation in ordered[:_MAX_LISTED_FINDINGS]:
+        location = violation.get("file", "?")
+        line_number = violation.get("line")
+        if line_number is not None:
+            location = f"{location}:{line_number}"
+        parts = [f"`{location}`", str(violation.get("severity", "")).lower()]
+        if violation.get("category"):
+            parts.append(violation["category"])
+        parts.append(violation.get("message", ""))
+        lines.append("- " + " — ".join(parts))
+        if violation.get("suggestion"):
+            lines.append(f"  Sugestão: {violation['suggestion']}")
+
+    remaining = len(ordered) - _MAX_LISTED_FINDINGS
+    if remaining > 0:
+        run_id = run.get("run_id", "")
+        lines.append(
+            f'_(mais {remaining} findings; use `get_gate_run("{run_id}")` para a lista completa)_'
+        )
+    return lines
+
+
 def build_quality_gate_table(run: dict, before_metrics: dict | None = None) -> str:
     before_metrics = before_metrics or {}
     lines = [
@@ -56,4 +140,6 @@ def build_quality_gate_table(run: dict, before_metrics: dict | None = None) -> s
                 f"{_format_value(before)} | {_format_value(after)} | {_trend(before, after)} |"
             )
 
+    lines.extend(_notes_section(run))
+    lines.extend(_findings_section(run))
     return "\n".join(lines)

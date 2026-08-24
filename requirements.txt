@@ -8,4 +8,4 @@ sqlalchemy
 alembic
 pytest
 lizard
-mcp>=1.0.0
+mcp>=1,<2

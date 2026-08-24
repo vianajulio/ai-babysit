@@ -1,7 +1,10 @@
+import fnmatch
 import re
 from pathlib import Path
 
 from app.gates.models import CheckResult, GateStatus, Violation
+from app.languages.detection import detect_language
+from app.runners.line_count import count_lines, strip_test_blocks
 
 _FUNC_PATTERNS = [
     # C#, Java, Go, Kotlin
@@ -30,6 +33,11 @@ def _is_ignored_file(path: str) -> bool:
     return Path(path).suffix.lower() in _IGNORED_EXTENSIONS or lower_path.endswith(_IGNORED_SUFFIXES)
 
 
+def _matches_any(rel_path: str, patterns: list[str]) -> bool:
+    normalized = rel_path.lstrip("/").replace("\\", "/")
+    return any(fnmatch.fnmatch(normalized, pattern) for pattern in patterns)
+
+
 def _count_function_lines(lines: list[str], max_lines: int) -> list[tuple[int, int]]:
     """Returns list of (start_line, length) for functions exceeding max_lines."""
     violations = []
@@ -56,12 +64,88 @@ def _count_function_lines(lines: list[str], max_lines: int) -> list[tuple[int, i
     return violations
 
 
+def _tier_violation(
+    *,
+    value: int,
+    warn: int | None,
+    hard: int,
+    is_new: bool,
+    label: str,
+    origin: str,
+) -> Violation | None:
+    """Violação de tamanho em dois patamares: alvo (aviso) e teto (reprova).
+
+    Um teto único obriga a escolher entre ser leniente ou travar o time. Com o
+    alvo separado, o gate consegue dizer "isso já está grande" antes de dizer
+    "isso não entra".
+    """
+    if value > hard:
+        return Violation(
+            severity="high" if is_new else "medium",
+            message=f"{label} com {value} linhas (limite: {hard}){origin}",
+            current_value=value,
+            allowed_value=hard,
+        )
+
+    if warn is not None and value > warn:
+        return Violation(
+            severity="low",
+            message=f"{label} com {value} linhas (alvo: {warn}, limite: {hard}){origin}",
+            current_value=value,
+            allowed_value=warn,
+        )
+
+    return None
+
+
 class FileSizeRunner:
     name = "file_size"
 
-    def __init__(self, max_lines_per_file: int = 400, max_lines_per_function: int = 80):
+    def __init__(
+        self,
+        max_lines_per_file: int = 350,
+        max_lines_per_function: int = 80,
+        exclude: list[str] | None = None,
+        new_files: set[str] | None = None,
+        fail_on_existing_files: bool = False,
+        warn_lines_per_file: int | None = None,
+        warn_lines_per_function: int | None = None,
+        count_mode: str = "code",
+        languages: dict[str, dict] | None = None,
+    ):
         self.max_lines_per_file = max_lines_per_file
         self.max_lines_per_function = max_lines_per_function
+        self.exclude = exclude or []
+        # Arquivos criados por esta mudança. `None` significa "origem
+        # desconhecida": nesse caso todo arquivo é tratado como novo, para o
+        # gate nunca afrouxar por falta de informação.
+        self.new_files = new_files
+        self.fail_on_existing_files = fail_on_existing_files
+        self.warn_lines_per_file = warn_lines_per_file
+        self.warn_lines_per_function = warn_lines_per_function
+        self.count_mode = count_mode
+        self.languages = languages or {}
+
+    def _is_new(self, rel_path: str) -> bool:
+        if self.new_files is None:
+            return True
+        return rel_path.lstrip("/").replace("\\", "/") in self.new_files
+
+    def _limits_for(self, language: str) -> dict:
+        """Limites efetivos da linguagem: base do check, sobrescrita por `languages`.
+
+        Um teto único trata Rust e Python como se custassem o mesmo por linha,
+        quando o Rust ainda carrega os testes dentro do arquivo de produção.
+        """
+        base = {
+            "max_lines_per_file": self.max_lines_per_file,
+            "max_lines_per_function": self.max_lines_per_function,
+            "warn_lines_per_file": self.warn_lines_per_file,
+            "warn_lines_per_function": self.warn_lines_per_function,
+            "count_mode": self.count_mode,
+            "exclude_test_blocks": False,
+        }
+        return {**base, **self.languages.get(language, {})}
 
     async def run(self, workspace: Path, changed_files: list[str]) -> CheckResult:
         violations: list[Violation] = []
@@ -71,49 +155,95 @@ class FileSizeRunner:
         for rel_path in changed_files:
             if _is_ignored_file(rel_path):
                 continue
+            if _matches_any(rel_path, self.exclude):
+                continue
 
             full_path = workspace / rel_path.lstrip("/")
             if not full_path.exists():
                 continue
 
             try:
-                lines = full_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                source = full_path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
 
-            max_file_lines = max(max_file_lines, len(lines))
+            language = detect_language(rel_path)
+            limits = self._limits_for(language)
+            if limits["exclude_test_blocks"]:
+                source = strip_test_blocks(source, language)
 
-            if len(lines) > self.max_lines_per_file:
-                violations.append(Violation(
-                    file=rel_path,
-                    severity="medium",
-                    message=f"Arquivo com {len(lines)} linhas (limite: {self.max_lines_per_file})",
-                    current_value=len(lines),
-                    allowed_value=self.max_lines_per_file,
-                ))
+            lines = source.splitlines()
+            size = count_lines(source, language, mode=limits["count_mode"])
+            max_file_lines = max(max_file_lines, size)
 
-            function_violations = _count_function_lines(lines, self.max_lines_per_function)
+            is_new = self._is_new(rel_path)
+            origin = "" if is_new else " — arquivo já existente antes desta mudança"
+
+            file_violation = _tier_violation(
+                value=size,
+                warn=limits["warn_lines_per_file"],
+                hard=limits["max_lines_per_file"],
+                is_new=is_new,
+                label="Arquivo",
+                origin=origin,
+            )
+            if file_violation:
+                violations.append(file_violation.model_copy(update={"file": rel_path}))
+
+            function_violations = _count_function_lines(
+                lines, limits["warn_lines_per_function"] or limits["max_lines_per_function"]
+            )
             for _, length in function_violations:
                 max_function_lines = max(max_function_lines, length)
 
             for start, length in function_violations:
-                violations.append(Violation(
-                    file=rel_path,
-                    line=start,
-                    severity="low",
-                    message=f"Função com {length} linhas (limite: {self.max_lines_per_function})",
-                    current_value=length,
-                    allowed_value=self.max_lines_per_function,
-                ))
+                violation = _tier_violation(
+                    value=length,
+                    warn=limits["warn_lines_per_function"],
+                    hard=limits["max_lines_per_function"],
+                    is_new=is_new,
+                    label="Função",
+                    origin=origin,
+                )
+                if violation:
+                    violations.append(violation.model_copy(
+                        update={"file": rel_path, "line": start}
+                    ))
 
-        status = GateStatus.failed if violations else GateStatus.passed
+        # `high` = passou do teto num arquivo criado agora, único caso que
+        # reprova por padrão. `medium` = passou do teto num arquivo que já era
+        # grande (senão todo PR que toca um legado herda a dívida dele).
+        # `low` = passou do alvo, mas não do teto: aviso, nunca reprovação.
+        blocking = [v for v in violations if v.severity == "high"]
+        over_limit = [v for v in violations if v.severity in ("high", "medium")]
+        metrics = {
+            "violations_count": len(violations),
+            "new_file_violations": len(blocking),
+            "over_target": len([v for v in violations if v.severity == "low"]),
+            "max_file_lines": max_file_lines,
+            "max_function_lines": max_function_lines,
+        }
+
+        if not violations:
+            status = GateStatus.passed
+        elif blocking or (self.fail_on_existing_files and over_limit):
+            status = GateStatus.failed
+        else:
+            status = GateStatus.warning
+            if over_limit:
+                metrics["note"] = (
+                    f"{len(over_limit)} violação(ões) apenas em arquivos que já existiam "
+                    "antes desta mudança; use fail_on_existing_files para reprovar também"
+                )
+            else:
+                metrics["note"] = (
+                    f"{len(violations)} arquivo(s)/função(ões) acima do alvo, dentro do "
+                    "limite — sinal para dividir antes que vire bloqueio"
+                )
+
         return CheckResult(
             check=self.name,
             status=status,
-            metrics={
-                "violations_count": len(violations),
-                "max_file_lines": max_file_lines,
-                "max_function_lines": max_function_lines,
-            },
+            metrics=metrics,
             violations=violations,
         )

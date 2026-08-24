@@ -22,7 +22,7 @@ def _full_config():
 def test_run_local_quality_gate_persists_pr_zero(monkeypatch, tmp_path):
     saved = {}
 
-    async def run_checks(workspace, changed_files):
+    async def run_checks(workspace, changed_files, only=None, new_files=None):
         assert workspace == tmp_path
         assert changed_files == ["Foo.cs"]
         return [CheckResult(check="file_size", status=GateStatus.passed)]
@@ -62,7 +62,7 @@ def test_local_ai_decision_uses_workspace_override(monkeypatch, tmp_path):
     )
     captured = {}
 
-    async def run_checks(workspace, changed_files):
+    async def run_checks(workspace, changed_files, only=None, new_files=None):
         return [CheckResult(check="file_size", status=GateStatus.passed)]
 
     async def annotate(checks, config):
@@ -89,7 +89,7 @@ def test_build_runners_filters_by_requested_checks():
 
 
 def test_run_review_task_gate_does_not_touch_baseline(monkeypatch, tmp_path):
-    async def run_checks(workspace, changed_files, only=None):
+    async def run_checks(workspace, changed_files, only=None, new_files=None):
         assert workspace == tmp_path
         assert changed_files == ["Foo.cs"]
         assert only == ["file_size"]

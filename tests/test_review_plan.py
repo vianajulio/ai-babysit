@@ -78,3 +78,24 @@ def test_disabled_checks_are_not_scheduled():
 
     assert "duplication" not in plan["tasks"][0]["checks"]
     assert all("big_o" not in t["checks"] for t in plan["tasks"])
+
+
+def test_one_shot_call_targets_run_local_gate_with_workspace():
+    plan = review_plan.build_plan(
+        files=_files(4, added=30), config=_cfg(), plan_id="p1", workspace="/tmp/projetos/x"
+    )
+    call = plan["tasks"][0]["call"]
+
+    assert call["tool"] == "run_local_gate"
+    assert call["args"]["workspace"] == "/tmp/projetos/x"
+    assert set(call["args"]) == {"workspace", "files"}
+
+
+def test_one_shot_plan_carries_standards_and_schema():
+    plan = review_plan.build_plan(
+        files=_files(4, added=30), config=_cfg(), plan_id="p1",
+        workspace="/tmp/x", standards="PADRÃO",
+    )
+
+    assert plan["standards"] == "PADRÃO"
+    assert plan["finding_schema"]["severity"] == "high | medium | low"

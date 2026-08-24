@@ -5,6 +5,7 @@ import subprocess
 import pytest
 
 import mcp_server_standalone as server
+from app.mcp import gate_tools, review_tools, runtime
 from app.gates.models import CheckResult, GateStatus
 from app.storage import database, repositories
 
@@ -18,7 +19,7 @@ def db(tmp_path, monkeypatch):
         f"sqlite:///{tmp_path / 'test.db'}", connect_args={"check_same_thread": False}
     )
     monkeypatch.setattr(database, "engine", engine)
-    monkeypatch.setattr(server, "_db_ready", False)
+    monkeypatch.setattr(runtime, "_db_ready", False)
     database.init_db()
     return engine
 
@@ -56,7 +57,7 @@ def _init_repo(repo, *, force_sharded=False):
     return repo
 
 
-async def _fake_run_review_task_gate(workspace, changed_files, checks):
+async def _fake_run_review_task_gate(workspace, changed_files, checks, new_files=None):
     return [
         CheckResult(check=name, status=GateStatus.passed, metrics={}, violations=[])
         for name in checks
@@ -72,7 +73,7 @@ def _plan_pr_review(repo, **kwargs):
 
 
 def test_plan_pr_review_rejects_workspace_that_is_not_a_directory(tmp_path, db, monkeypatch):
-    monkeypatch.setattr(server, "_ensure_db", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
+    monkeypatch.setattr(review_tools, "ensure_db", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
     missing = tmp_path / "nope"
 
     result = json.loads(asyncio.run(server.plan_pr_review(str(missing), "HEAD~1")))
@@ -82,7 +83,7 @@ def test_plan_pr_review_rejects_workspace_that_is_not_a_directory(tmp_path, db, 
 
 
 def test_plan_pr_review_rejects_workspace_that_is_not_a_git_repo(tmp_path, db, monkeypatch):
-    monkeypatch.setattr(server, "_ensure_db", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
+    monkeypatch.setattr(review_tools, "ensure_db", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
     not_repo = tmp_path / "plain"
     not_repo.mkdir()
 
@@ -104,7 +105,7 @@ def test_plan_pr_review_returns_one_shot_for_small_diff(tmp_path, db):
 
 
 def test_run_review_task_rejects_unknown_plan_or_task(tmp_path, db, monkeypatch):
-    monkeypatch.setattr(server, "run_review_task_gate", _fake_run_review_task_gate)
+    monkeypatch.setattr(review_tools, "run_review_task_gate", _fake_run_review_task_gate)
 
     unknown_plan = json.loads(asyncio.run(server.run_review_task("nope", "global")))
     assert "error" in unknown_plan
@@ -118,7 +119,7 @@ def test_run_review_task_rejects_unknown_plan_or_task(tmp_path, db, monkeypatch)
 
 
 def test_run_review_task_is_idempotent_on_retry(tmp_path, db, monkeypatch):
-    monkeypatch.setattr(server, "run_review_task_gate", _fake_run_review_task_gate)
+    monkeypatch.setattr(review_tools, "run_review_task_gate", _fake_run_review_task_gate)
     repo = _init_repo(tmp_path / "repo", force_sharded=True)
     plan = _plan_pr_review(repo)
 
@@ -134,7 +135,7 @@ def test_run_review_task_is_idempotent_on_retry(tmp_path, db, monkeypatch):
 
 
 def test_get_review_plan_reports_pending_tasks_before_aggregating(tmp_path, db, monkeypatch):
-    monkeypatch.setattr(server, "run_review_task_gate", _fake_run_review_task_gate)
+    monkeypatch.setattr(review_tools, "run_review_task_gate", _fake_run_review_task_gate)
     repo = _init_repo(tmp_path / "repo", force_sharded=True)
     plan = _plan_pr_review(repo)
     all_task_ids = {t["task_id"] for t in plan["tasks"]}
@@ -152,7 +153,7 @@ def test_get_review_plan_reports_pending_tasks_before_aggregating(tmp_path, db, 
 
 
 def test_get_review_plan_returns_the_markdown_table_when_complete(tmp_path, db, monkeypatch):
-    monkeypatch.setattr(server, "run_review_task_gate", _fake_run_review_task_gate)
+    monkeypatch.setattr(review_tools, "run_review_task_gate", _fake_run_review_task_gate)
     repo = _init_repo(tmp_path / "repo", force_sharded=True)
     plan = _plan_pr_review(repo)
 
@@ -171,3 +172,86 @@ def test_get_review_plan_returns_the_markdown_table_when_complete(tmp_path, db, 
     close_result = json.loads(asyncio.run(server.close_review_plan(plan["plan_id"])))
     assert close_result["closed"] is True
     assert repositories.load_review_plan(plan["plan_id"]) is None
+
+
+def _record_git_calls(monkeypatch):
+    calls = []
+    original = review_tools.git
+
+    def _spy(args, cwd, **kwargs):
+        calls.append(list(args))
+        return original(args, cwd, **kwargs)
+
+    monkeypatch.setattr(review_tools, "git", _spy)
+    return calls
+
+
+def test_worktree_mode_does_not_create_a_detached_worktree(tmp_path, db, monkeypatch):
+    repo = _init_repo(tmp_path / "repo", force_sharded=True)
+    (repo / "a.py").write_text("value = 3\n", encoding="utf-8")
+    calls = _record_git_calls(monkeypatch)
+
+    plan = _plan_pr_review(repo, base_ref="HEAD", head_ref="WORKTREE")
+
+    assert plan["volatile"] is True
+    assert not any(call[:2] == ["worktree", "add"] for call in calls)
+
+
+def test_worktree_mode_sees_uncommitted_changes(tmp_path, db):
+    repo = _init_repo(tmp_path / "repo", force_sharded=True)
+    (repo / "a.py").write_text("value = 3\nextra = 4\n", encoding="utf-8")
+    (repo / "novo.py").write_text("print('x')\n", encoding="utf-8")
+
+    plan = _plan_pr_review(repo, base_ref="HEAD", head_ref="WORKTREE")
+    files = {path for task in plan["tasks"] for path in task["files"]}
+
+    assert "a.py" in files
+    assert "novo.py" in files          # untracked entra na revisão rápida
+
+
+def test_worktree_mode_never_saves_baseline(tmp_path, db):
+    repo = _init_repo(tmp_path / "repo", force_sharded=True)
+    (repo / "a.py").write_text("value = 9\n", encoding="utf-8")
+
+    plan = _plan_pr_review(repo, base_ref="HEAD", head_ref="WORKTREE")
+    record = repositories.load_review_plan(plan["plan_id"])
+
+    assert record["payload"]["runtime"]["use_ratchet"] is False
+    assert record["payload"]["runtime"]["worktree"] is None
+    assert record["payload"]["runtime"]["volatile"] is True
+
+
+def test_committed_plan_is_not_volatile(tmp_path, db):
+    repo = _init_repo(tmp_path / "repo")
+
+    plan = _plan_pr_review(repo)
+
+    assert plan["volatile"] is False
+
+
+def test_run_review_task_defaults_to_a_lean_summary(tmp_path, db, monkeypatch):
+    monkeypatch.setattr(review_tools, "run_review_task_gate", _fake_run_review_task_gate)
+    plan = _plan_pr_review(_init_repo(tmp_path / "repo", force_sharded=True))
+
+    out = json.loads(asyncio.run(server.run_review_task(plan["plan_id"], "global")))
+
+    assert set(out) == {"plan_id", "task_id", "status", "violations", "remaining_tasks"}
+
+
+def test_run_review_task_full_detail_returns_the_checks(tmp_path, db, monkeypatch):
+    monkeypatch.setattr(review_tools, "run_review_task_gate", _fake_run_review_task_gate)
+    plan = _plan_pr_review(_init_repo(tmp_path / "repo", force_sharded=True))
+
+    out = json.loads(asyncio.run(server.run_review_task(plan["plan_id"], "global", detail="full")))
+
+    assert [check["check"] for check in out["checks"]]
+    assert "violations" in out["checks"][0]
+
+
+def test_run_review_task_rejects_unknown_detail(tmp_path, db, monkeypatch):
+    monkeypatch.setattr(review_tools, "run_review_task_gate", _fake_run_review_task_gate)
+    plan = _plan_pr_review(_init_repo(tmp_path / "repo", force_sharded=True))
+
+    out = json.loads(asyncio.run(server.run_review_task(plan["plan_id"], "global", detail="tudo")))
+
+    assert "detail" in out["error"]

@@ -22,12 +22,14 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen2.5-coder:7b"
     ollama_timeout: float = 120.0
 
-    babysit_temp_dir: str = "/tmp/babysit"
+    # Relative defaults keep local/MCP runs portable.  Callers that need a
+    # shared location can still provide an explicit value through the env.
+    babysit_temp_dir: str = ".babysit/workspaces"
     babysit_database_url: str = "sqlite:///./babysit.db"
     babysit_workspace_timeout: int = 300
     babysit_cleanup_after_run: bool = True
 
-    standards_path: str = "/mnt/jogos/Plus/energia/backend/docs/coding-standards.md"
+    standards_path: str = "docs/coding-standards.md"
 
     @field_validator("azure_pat", "azure_org", "azure_project", "azure_repo", mode="before")
     @classmethod
@@ -54,22 +56,46 @@ class Settings(BaseSettings):
         return _deep_merge(config, project_config)
 
 
-def _load_project_config(workspace: Path) -> dict:
+def project_config_path(workspace: Path) -> Path | None:
+    """Arquivo de config do projeto revisado, ou `None` se ele não tiver um.
+
+    Sem isso o gate roda com os defaults globais do Babysit sem contar a
+    ninguém, e o leitor do relatório não sabe se um limite é regra do projeto
+    ou palpite da ferramenta.
+    """
     for file_name in (".babysit.yml", ".babysit.yaml"):
         cfg_path = workspace / file_name
         if cfg_path.exists():
-            with cfg_path.open() as f:
-                return yaml.safe_load(f) or {}
-    return {}
+            return cfg_path
+    return None
+
+
+def _load_project_config(workspace: Path) -> dict:
+    cfg_path = project_config_path(workspace)
+    if cfg_path is None:
+        return {}
+    with cfg_path.open(encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge(merged[key], value)
+        base_value = merged.get(key)
+        if isinstance(value, dict) and isinstance(base_value, dict):
+            merged[key] = _deep_merge(base_value, value)
+        elif isinstance(value, list) and isinstance(base_value, list):
+            merged[key] = _merge_lists(base_value, value)
         else:
             merged[key] = value
+    return merged
+
+
+def _merge_lists(base: list, override: list) -> list:
+    merged = list(base)
+    for item in override:
+        if item not in merged:
+            merged.append(item)
     return merged
 
 

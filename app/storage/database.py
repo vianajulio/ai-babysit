@@ -1,9 +1,44 @@
-from sqlalchemy import Column, DateTime, Integer, String, Text, UniqueConstraint, create_engine
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+    event,
+)
 from sqlalchemy.orm import DeclarativeBase, Session
 
 from settings import settings
 
-engine = create_engine(settings.babysit_database_url, connect_args={"check_same_thread": False})
+
+def create_sqlite_engine(url: str):
+    """Engine com WAL ligado quando a URL é SQLite.
+
+    Vários subagentes gravam resultado parcial em paralelo (`run_review_task`,
+    `submit_task_findings`). No journal padrão, escritas concorrentes viram
+    `database is locked`; com WAL e `busy_timeout`, elas apenas esperam a vez —
+    as transações aqui são curtas e raras (uma por task).
+    """
+    new_engine = create_engine(url, connect_args={"check_same_thread": False})
+    if not url.startswith("sqlite"):
+        return new_engine
+
+    @event.listens_for(new_engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record):  # pragma: no cover - trivial
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        finally:
+            cursor.close()
+
+    return new_engine
+
+
+engine = create_sqlite_engine(settings.babysit_database_url)
 
 
 class Base(DeclarativeBase):
