@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "babysit": {
-      "command": "/mnt/jogos/Projetos/babysit/.venv/bin/python",
-      "args": ["/mnt/jogos/Projetos/babysit/mcp_server_standalone.py"]
+      "command": "D:\\Projetos\\ia-babysit\\.venv\\Scripts\\python.exe",
+      "args": ["D:\\Projetos\\ia-babysit\\mcp_server_standalone.py"]
     }
   }
 }
